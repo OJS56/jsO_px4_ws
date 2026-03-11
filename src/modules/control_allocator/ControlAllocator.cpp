@@ -339,9 +339,41 @@ ControlAllocator::Run()
 		vehicle_status_s vehicle_status;
 
 		if (_vehicle_status_sub.update(&vehicle_status)) {
+			const bool was_armed = _armed;
 
 			_armed = vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
 			_is_vtol = vehicle_status.is_vtol;
+
+			if (_armed && !was_armed) {
+				_ftc_start_time = hrt_absolute_time();
+				_ftc_active = false;
+				_ftc_triggered_once = false;
+				_ftc_fault_type = 0;
+				_ftc_fault_timestamp = 0;
+				_ftc_fault_motor_idx = -1;
+				_ftc_current_loe = 1.f;
+				_ftc_fault_nominal_command = 0.f;
+				_ftc_fault_applied_command = 0.f;
+				_ftc_fault_command_limit = 1.f;
+				_ftc_residual_yaw_moment = 0.f;
+				_reaction_wheel_torque_command = 0.f;
+				_reaction_wheel_active = false;
+
+			} else if (!_armed && was_armed) {
+				_ftc_start_time = 0;
+				_ftc_active = false;
+				_ftc_triggered_once = false;
+				_ftc_fault_type = 0;
+				_ftc_fault_timestamp = 0;
+				_ftc_fault_motor_idx = -1;
+				_ftc_current_loe = 1.f;
+				_ftc_fault_nominal_command = 0.f;
+				_ftc_fault_applied_command = 0.f;
+				_ftc_fault_command_limit = 1.f;
+				_ftc_residual_yaw_moment = 0.f;
+				_reaction_wheel_torque_command = 0.f;
+				_reaction_wheel_active = false;
+			}
 
 			ActuatorEffectiveness::FlightPhase flight_phase{ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT};
 
@@ -379,6 +411,8 @@ ControlAllocator::Run()
 	// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 	const hrt_abstime now = hrt_absolute_time();
 	const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
+
+	update_ftc_state(now);
 
 	bool do_update = false;
 	vehicle_torque_setpoint_s vehicle_torque_setpoint;
@@ -438,6 +472,7 @@ ControlAllocator::Run()
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
 
 			if (i == 0) {
+				apply_active_ftc_allocation(i, c[i], now);
 				// The motors are always in allocation 0
 				handle_stopped_motors(now);
 			}
@@ -449,6 +484,8 @@ ControlAllocator::Run()
 			_control_allocation[i]->clipActuatorSetpoint();
 		}
 	}
+
+	update_reaction_wheel_setpoint(_reaction_wheel_torque_command, _ftc_residual_yaw_moment, _reaction_wheel_active, now);
 
 	// Publish actuator setpoint and allocator status
 	publish_actuator_controls();
@@ -466,6 +503,229 @@ ControlAllocator::Run()
 	}
 
 	perf_end(_loop_perf);
+}
+
+void
+ControlAllocator::update_ftc_state(hrt_abstime now)
+{
+	if (!_armed || _param_ca_ftc_en.get() == 0) {
+		_ftc_active = false;
+		return;
+	}
+
+	if (_ftc_start_time == 0) {
+		_ftc_start_time = now;
+	}
+
+	const int configured_fault_type = _param_ca_ftc_type.get();
+
+	if (configured_fault_type == 0) {
+		_ftc_active = false;
+		return;
+	}
+
+	const bool in_hover = _actuator_effectiveness->getFlightPhase() == ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT;
+	const float elapsed = (now - _ftc_start_time) / 1e6f;
+	const float trigger_time = _param_ca_ftc_trig_t.get();
+
+	if (!_ftc_triggered_once && in_hover && elapsed >= trigger_time) {
+		_ftc_active = true;
+		_ftc_triggered_once = true;
+		_ftc_fault_type = configured_fault_type;
+		_ftc_fault_timestamp = now;
+		_ftc_fault_motor_idx = math::constrain(_param_ca_ftc_mot.get() - 1, 0, actuator_motors_s::NUM_CONTROLS - 1);
+		_ftc_current_loe = math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f);
+
+		const char *fault_type_str = "unknown";
+
+		switch (_ftc_fault_type) {
+		case 1:
+			fault_type_str = "LOE";
+			break;
+
+		case 2:
+			fault_type_str = "Saturation";
+			break;
+
+		default:
+			break;
+		}
+
+		PX4_WARN("FTC fault triggered: motor=%d type=%s lambda=%.2f elapsed=%.2fs",
+			 _ftc_fault_motor_idx + 1, fault_type_str, (double)_ftc_current_loe, (double)elapsed);
+	}
+}
+
+void
+ControlAllocator::update_reaction_wheel_setpoint(float torque_command, float residual_yaw_moment, bool active, hrt_abstime now)
+{
+	reaction_wheel_setpoint_s reaction_wheel_setpoint{};
+	reaction_wheel_setpoint.timestamp = now;
+	reaction_wheel_setpoint.torque = torque_command;
+	reaction_wheel_setpoint.residual_yaw_moment = residual_yaw_moment;
+	reaction_wheel_setpoint.active = active;
+	_reaction_wheel_setpoint_pub.publish(reaction_wheel_setpoint);
+}
+
+bool
+ControlAllocator::get_motor_column_index(int motor_idx, int matrix_index, int &matrix_column) const
+{
+	int actuator_idx = 0;
+	int actuator_idx_matrix[ActuatorEffectiveness::MAX_NUM_MATRICES] {};
+
+	for (int motors_idx = 0; motors_idx < _num_actuators[(int)ActuatorType::MOTORS]
+	     && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
+		const int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+		const int current_matrix_column = actuator_idx_matrix[selected_matrix];
+
+		if (motors_idx == motor_idx && selected_matrix == matrix_index) {
+			matrix_column = current_matrix_column;
+			return true;
+		}
+
+		++actuator_idx_matrix[selected_matrix];
+		++actuator_idx;
+	}
+
+	return false;
+}
+
+void
+ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now)
+{
+	const bool was_reaction_wheel_active = _reaction_wheel_active;
+	_ftc_fault_nominal_command = 0.f;
+	_ftc_fault_applied_command = 0.f;
+	_ftc_fault_command_limit = 1.f;
+	_ftc_residual_yaw_moment = 0.f;
+	_reaction_wheel_torque_command = 0.f;
+	_reaction_wheel_active = false;
+
+	if (!_ftc_active || _ftc_fault_motor_idx < 0 || matrix_index != 0) {
+		return;
+	}
+
+	const int motor_count = _num_actuators[(int)ActuatorType::MOTORS];
+
+	if (motor_count < 4) {
+		return;
+	}
+
+	int fault_column = -1;
+
+	if (!get_motor_column_index(_ftc_fault_motor_idx, matrix_index, fault_column)) {
+		return;
+	}
+
+	const ActuatorEffectiveness::EffectivenessMatrix &effectiveness = _control_allocation[matrix_index]->getEffectivenessMatrix();
+	const ActuatorVector &actuator_min = _control_allocation[matrix_index]->getActuatorMin();
+	const ActuatorVector &actuator_max = _control_allocation[matrix_index]->getActuatorMax();
+	ActuatorVector &actuator_sp = _control_allocation[matrix_index]->_actuator_sp;
+
+	const float nominal_fault_command = actuator_sp(fault_column);
+	const float fault_command_limit = actuator_max(fault_column) * _ftc_current_loe;
+	const float applied_fault_command = fminf(nominal_fault_command, fault_command_limit);
+
+	_ftc_fault_nominal_command = nominal_fault_command;
+	_ftc_fault_applied_command = applied_fault_command;
+	_ftc_fault_command_limit = fault_command_limit;
+
+	if (nominal_fault_command <= fault_command_limit + FLT_EPSILON) {
+		return;
+	}
+
+	matrix::SquareMatrix<float, 3> reduced_effectiveness;
+	matrix::Vector3f reduced_target;
+	matrix::Vector3f fault_contribution;
+	int healthy_columns[3] {};
+	int healthy_count = 0;
+	int fault_motor_matrix_column = -1;
+
+	for (int motor_idx = 0; motor_idx < motor_count && motor_idx < actuator_motors_s::NUM_CONTROLS; motor_idx++) {
+		int motor_matrix_column = -1;
+
+		if (!get_motor_column_index(motor_idx, matrix_index, motor_matrix_column)) {
+			continue;
+		}
+
+		if (motor_idx == _ftc_fault_motor_idx) {
+			fault_motor_matrix_column = motor_matrix_column;
+			continue;
+		}
+
+		if (healthy_count < 3) {
+			healthy_columns[healthy_count++] = motor_matrix_column;
+		}
+	}
+
+	if (healthy_count != 3 || fault_motor_matrix_column < 0) {
+		return;
+	}
+
+	const int reduced_axes[3] {0, 1, 5};
+
+	for (int row = 0; row < 3; row++) {
+		fault_contribution(row) = effectiveness(reduced_axes[row], fault_motor_matrix_column) * applied_fault_command;
+		reduced_target(row) = control_sp(reduced_axes[row]) - fault_contribution(row);
+
+		for (int col = 0; col < 3; col++) {
+			reduced_effectiveness(row, col) = effectiveness(reduced_axes[row], healthy_columns[col]);
+		}
+	}
+
+	matrix::SquareMatrix<float, 3> reduced_inverse;
+
+	if (!matrix::inv(reduced_effectiveness, reduced_inverse)) {
+		matrix::Matrix<float, 3, 3> reduced_pseudo_inverse;
+
+		if (!matrix::geninv(reduced_effectiveness, reduced_pseudo_inverse)) {
+			PX4_WARN("FTC reduced allocation failed: singular matrix");
+			return;
+		}
+
+		for (int col = 0; col < 3; col++) {
+			float actuator_command = 0.f;
+
+			for (int row = 0; row < 3; row++) {
+				actuator_command += reduced_pseudo_inverse(col, row) * reduced_target(row);
+			}
+
+			actuator_sp(healthy_columns[col]) = math::constrain(actuator_command, actuator_min(healthy_columns[col]),
+						 actuator_max(healthy_columns[col]));
+		}
+
+	} else {
+		const matrix::Vector3f healthy_solution = reduced_inverse * reduced_target;
+
+		for (int col = 0; col < 3; col++) {
+			actuator_sp(healthy_columns[col]) = math::constrain(healthy_solution(col), actuator_min(healthy_columns[col]),
+						 actuator_max(healthy_columns[col]));
+		}
+	}
+
+	actuator_sp(fault_motor_matrix_column) = math::constrain(applied_fault_command, actuator_min(fault_motor_matrix_column),
+				 actuator_max(fault_motor_matrix_column));
+
+	float actual_prop_yaw = 0.f;
+
+	for (int motor_idx = 0; motor_idx < motor_count && motor_idx < actuator_motors_s::NUM_CONTROLS; motor_idx++) {
+		int motor_matrix_column = -1;
+
+		if (get_motor_column_index(motor_idx, matrix_index, motor_matrix_column)) {
+			actual_prop_yaw += effectiveness(2, motor_matrix_column) * actuator_sp(motor_matrix_column);
+		}
+	}
+
+	_ftc_residual_yaw_moment = control_sp(2) - actual_prop_yaw;
+	_reaction_wheel_torque_command = -_ftc_residual_yaw_moment;
+	_reaction_wheel_active = true;
+
+	if (!was_reaction_wheel_active) {
+		PX4_WARN("FTC reallocation active: motor=%d nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f t=%.3fs",
+			 _ftc_fault_motor_idx + 1, (double)_ftc_fault_nominal_command, (double)_ftc_fault_applied_command,
+			 (double)_ftc_fault_command_limit, (double)_ftc_residual_yaw_moment,
+			 (double)_reaction_wheel_torque_command, (double)(now / 1e6));
+	}
 }
 
 void
@@ -844,6 +1104,36 @@ int ControlAllocator::task_spawn(int argc, char *argv[])
 int ControlAllocator::print_status()
 {
 	PX4_INFO("Running");
+	const char *fault_type_str = "none";
+
+	switch (_ftc_fault_type) {
+	case 1:
+		fault_type_str = "LOE";
+		break;
+
+	case 2:
+		fault_type_str = "Saturation";
+		break;
+
+	default:
+		break;
+	}
+
+	PX4_INFO("FTC: %s, triggered=%s, arm_ref=%.3fs, fault_time=%.3fs, motor=%d, type=%s, lambda=%.2f",
+		 _ftc_active ? "active" : "inactive",
+		 _ftc_triggered_once ? "yes" : "no",
+		 (double)(_ftc_start_time / 1e6),
+		 (double)(_ftc_fault_timestamp / 1e6),
+		 _ftc_fault_motor_idx >= 0 ? _ftc_fault_motor_idx + 1 : 0,
+		 fault_type_str,
+		 (double)_ftc_current_loe);
+	PX4_INFO("FTC alloc: nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f wheel_active=%s",
+		 (double)_ftc_fault_nominal_command,
+		 (double)_ftc_fault_applied_command,
+		 (double)_ftc_fault_command_limit,
+		 (double)_ftc_residual_yaw_moment,
+		 (double)_reaction_wheel_torque_command,
+		 _reaction_wheel_active ? "yes" : "no");
 
 	// Print current allocation method
 	switch (_allocation_method_id) {
