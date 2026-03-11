@@ -217,10 +217,20 @@ private:
 	perf_counter_t	_loop_perf;			/**< loop duration performance counter */
 
 	bool _armed{false};
+	bool _was_armed{false};
 	bool _is_vtol{false};
+	bool _in_hover_flight{false};
+	bool _ftc_active{false};
+	bool _ftc_trigger_logged{false};
 	hrt_abstime _last_run{0};
+	hrt_abstime _arm_entry_time{0};
+	hrt_abstime _ftc_trigger_time{0};
 	hrt_abstime _timestamp_sample{0};
 	hrt_abstime _last_status_pub{0};
+
+	static constexpr int FTC_SCENARIO_MOTOR = 3;
+	static constexpr int FTC_SCENARIO_TYPE_LOE = 1;
+	static constexpr float FTC_SCENARIO_LOE_LAMBDA = 0.85f;
 
 	ParamHandles _param_handles{};
 	Params _params{};
@@ -231,6 +241,8 @@ private:
 		(ParamInt<px4::params::CA_AIRFRAME>) _param_ca_airframe,
 		(ParamInt<px4::params::CA_METHOD>) _param_ca_method,
 		(ParamInt<px4::params::CA_FAILURE_MODE>) _param_ca_failure_mode,
+		(ParamInt<px4::params::CA_FTC_EN>) _param_ca_ftc_en,
+		(ParamFloat<px4::params::CA_FTC_TRIG_T>) _param_ca_ftc_trig_t,
 		(ParamInt<px4::params::CA_R_REV>) _param_r_rev,
 		(ParamFloat<px4::params::CA_ICE_PERIOD>) _param_ice_shedding_period
 	)

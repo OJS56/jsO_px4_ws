@@ -343,6 +343,22 @@ ControlAllocator::Run()
 			_armed = vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
 			_is_vtol = vehicle_status.is_vtol;
 
+			if (_armed && !_was_armed) {
+				_arm_entry_time = hrt_absolute_time();
+				_ftc_active = false;
+				_ftc_trigger_logged = false;
+				_ftc_trigger_time = 0;
+				PX4_INFO("FTC scenario arm entry detected");
+			}
+
+			if (!_armed) {
+				_ftc_active = false;
+				_ftc_trigger_logged = false;
+				_ftc_trigger_time = 0;
+			}
+
+			_was_armed = _armed;
+
 			ActuatorEffectiveness::FlightPhase flight_phase{ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT};
 
 			// Check if the current flight phase is HOVER or FIXED_WING
@@ -365,6 +381,7 @@ ControlAllocator::Run()
 
 			// Forward to effectiveness source
 			_actuator_effectiveness->setFlightPhase(flight_phase);
+			_in_hover_flight = flight_phase == ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT;
 		}
 	}
 
@@ -379,6 +396,21 @@ ControlAllocator::Run()
 	// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 	const hrt_abstime now = hrt_absolute_time();
 	const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
+
+	if (_armed && _in_hover_flight && _param_ca_ftc_en.get() == 1 && !_ftc_active && _arm_entry_time > 0) {
+		const float elapsed = (now - _arm_entry_time) * 1e-6f;
+
+		if (elapsed >= _param_ca_ftc_trig_t.get()) {
+			_ftc_active = true;
+			_ftc_trigger_time = now;
+
+			if (!_ftc_trigger_logged) {
+				PX4_WARN("FTC trigger active: motor=%d type=%d(LOE) lambda=%.2f elapsed=%.2fs", FTC_SCENARIO_MOTOR,
+					 FTC_SCENARIO_TYPE_LOE, FTC_SCENARIO_LOE_LAMBDA, (double)elapsed);
+				_ftc_trigger_logged = true;
+			}
+		}
+	}
 
 	bool do_update = false;
 	vehicle_torque_setpoint_s vehicle_torque_setpoint;
@@ -986,6 +1018,13 @@ int ControlAllocator::print_status()
 	if (_handled_motor_failure_bitmask) {
 		PX4_INFO("Failed motors: %i (0x%x)", math::countSetBits(_handled_motor_failure_bitmask),
 			 _handled_motor_failure_bitmask);
+	}
+
+	if (_ftc_active) {
+		const float elapsed_since_arm = _arm_entry_time > 0 ? (hrt_absolute_time() - _arm_entry_time) * 1e-6f : 0.f;
+		PX4_INFO("FTC active: motor=%d type=%d(LOE) lambda=%.2f trigger_t=%.2fs elapsed=%.2fs trigger_ts=%llu",
+			 FTC_SCENARIO_MOTOR, FTC_SCENARIO_TYPE_LOE, (double)FTC_SCENARIO_LOE_LAMBDA, (double)_param_ca_ftc_trig_t.get(),
+			 (double)elapsed_since_arm, (unsigned long long)_ftc_trigger_time);
 	}
 
 	// Print perf
