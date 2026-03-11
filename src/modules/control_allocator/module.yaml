@@ -621,6 +621,89 @@ parameters:
                 1: Remove first failed motor from effectiveness
             default: 0
 
+        CA_FTC_EN:
+            description:
+                short: Enable fault-tolerant control handling
+                long: |
+                    Enables fault-tolerant control (FTC) behavior in the control allocator.
+                    When disabled, all FTC-related parameters are ignored.
+            type: boolean
+            default: 0
+
+        CA_FTC_MOT:
+            description:
+                short: Fault target motor index
+                long: |
+                    Selects the motor index used by FTC logic as the fault target.
+                    Indexing is 1-based and supports up to 12 motors.
+            type: int32
+            min: 1
+            max: 12
+            default: 1
+
+        CA_FTC_TYPE:
+            description:
+                short: Fault type model for FTC
+                long: |
+                    Selects which fault model is used by the fault-tolerant control allocator.
+            type: enum
+            values:
+                0: None
+                1: Loss of effectiveness (LOE)
+                2: Saturation
+            default: 0
+
+        CA_FTC_LOE:
+            description:
+                short: Loss-of-effectiveness ratio
+                long: |
+                    Fraction of effectiveness retained when CA_FTC_TYPE is set to LOE.
+                    1.0 means no loss, lower values increase simulated or configured fault severity.
+            type: float
+            decimal: 2
+            increment: 0.01
+            min: 0.0
+            max: 1.0
+            default: 0.85
+
+        CA_FTC_TRIG_T:
+            description:
+                short: FTC trigger time
+                long: |
+                    Time in seconds before FTC behavior is triggered after arming or scenario start.
+            type: float
+            decimal: 2
+            increment: 0.1
+            unit: s
+            min: 0.0
+            max: 60.0
+            default: 3.0
+
+        CA_FTC_YAW_SCL:
+            description:
+                short: Yaw setpoint scale during fault handling
+                long: |
+                    Scales yaw setpoint authority while a fault condition is active.
+                    Lower values reduce yaw demand to preserve controllability.
+            type: float
+            decimal: 2
+            increment: 0.01
+            min: 0.0
+            max: 1.0
+            default: 1.0
+
+        CA_FTC_ALLOC_MODE:
+            description:
+                short: FTC allocation mode
+                long: |
+                    Selects the control allocation mode used when FTC is active.
+                    Normal keeps standard allocation, while Degraded applies fault-tolerant behavior.
+            type: enum
+            values:
+                0: Normal
+                1: Degraded
+            default: 0
+
         CA_ICE_PERIOD:
             description:
                 short: Ice shedding cycle period
