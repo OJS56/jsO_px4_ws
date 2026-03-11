@@ -150,6 +150,10 @@ private:
 
 	float get_ice_shedding_output(hrt_abstime now);
 
+	void update_ftc_state(hrt_abstime now);
+	void apply_ftc_to_control_setpoint(matrix::Vector3f &torque_sp, matrix::Vector3f &thrust_sp);
+	void apply_ftc_to_effectiveness_matrix(matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness);
+
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
 	int _num_control_allocation{0};
@@ -218,6 +222,11 @@ private:
 
 	bool _armed{false};
 	bool _is_vtol{false};
+	bool _ftc_active{false};
+	bool _ftc_triggered_once{false};
+	int _ftc_fault_motor_idx{-1};
+	hrt_abstime _ftc_start_time{0};
+	float _ftc_current_loe{1.f};
 	hrt_abstime _last_run{0};
 	hrt_abstime _timestamp_sample{0};
 	hrt_abstime _last_status_pub{0};
@@ -232,7 +241,12 @@ private:
 		(ParamInt<px4::params::CA_METHOD>) _param_ca_method,
 		(ParamInt<px4::params::CA_FAILURE_MODE>) _param_ca_failure_mode,
 		(ParamInt<px4::params::CA_R_REV>) _param_r_rev,
-		(ParamFloat<px4::params::CA_ICE_PERIOD>) _param_ice_shedding_period
+		(ParamFloat<px4::params::CA_ICE_PERIOD>) _param_ice_shedding_period,
+		(ParamInt<px4::params::CA_FTC_EN>) _param_ca_ftc_en,
+		(ParamInt<px4::params::CA_FTC_MOT>) _param_ca_ftc_mot,
+		(ParamInt<px4::params::CA_FTC_TYPE>) _param_ca_ftc_type,
+		(ParamFloat<px4::params::CA_FTC_LOE>) _param_ca_ftc_loe,
+		(ParamFloat<px4::params::CA_FTC_TRIG_T>) _param_ca_ftc_trig_t
 	)
 
 };
