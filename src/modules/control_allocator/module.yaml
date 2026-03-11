@@ -692,7 +692,7 @@ parameters:
             max: 1.0
             default: 1.0
 
-        CA_FTC_ALLOC_MODE:
+        CA_FTC_ALC_MODE:
             description:
                 short: FTC allocation mode
                 long: |
