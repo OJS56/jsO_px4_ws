@@ -59,6 +59,7 @@ ControlAllocator::ControlAllocator() :
 	_control_allocator_status_pub[0].advertise();
 	_control_allocator_status_pub[1].advertise();
 
+	_control_allocator_ftc_debug_pub.advertise();
 	_actuator_motors_pub.advertise();
 	_actuator_servos_pub.advertise();
 	_actuator_servos_trim_pub.advertise();
@@ -433,6 +434,9 @@ ControlAllocator::Run()
 
 	if (do_update) {
 		_last_run = now;
+		float pre_ftc_motor_controls[MAX_NUM_MOTORS] {};
+		float post_ftc_motor_controls[MAX_NUM_MOTORS] {};
+		float final_motor_controls[MAX_NUM_MOTORS] {};
 
 		check_for_motor_failures();
 
@@ -472,9 +476,11 @@ ControlAllocator::Run()
 								_control_allocation[i]->getActuatorMin(), _control_allocation[i]->getActuatorMax());
 
 			if (i == 0) {
+				fill_motor_controls_from_allocation(pre_ftc_motor_controls);
 				apply_active_ftc_allocation(i, c[i], now);
 				// The motors are always in allocation 0
 				handle_stopped_motors(now);
+				fill_motor_controls_from_allocation(post_ftc_motor_controls);
 			}
 
 			if (_has_slew_rate) {
@@ -482,7 +488,13 @@ ControlAllocator::Run()
 			}
 
 			_control_allocation[i]->clipActuatorSetpoint();
+
+			if (i == 0) {
+				fill_motor_controls_from_allocation(final_motor_controls);
+			}
 		}
+
+		publish_control_allocator_ftc_debug(now, pre_ftc_motor_controls, post_ftc_motor_controls, final_motor_controls);
 	}
 
 	update_reaction_wheel_setpoint(_reaction_wheel_torque_command, _ftc_residual_yaw_moment, _reaction_wheel_active, now);
@@ -503,6 +515,88 @@ ControlAllocator::Run()
 	}
 
 	perf_end(_loop_perf);
+}
+
+void
+ControlAllocator::fill_motor_controls_from_allocation(float controls[MAX_NUM_MOTORS]) const
+{
+	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
+		controls[i] = NAN;
+	}
+
+	int actuator_idx = 0;
+	int actuator_idx_matrix[ActuatorEffectiveness::MAX_NUM_MATRICES] {};
+
+	for (int motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
+		const int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+		const float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+		controls[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+
+		++actuator_idx_matrix[selected_matrix];
+		++actuator_idx;
+	}
+}
+
+void
+ControlAllocator::fill_motor_saturation_from_allocation(int8_t saturation[MAX_NUM_MOTORS]) const
+{
+	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
+		saturation[i] = control_allocator_ftc_debug_s::ACTUATOR_SATURATION_OK;
+	}
+
+	int actuator_idx = 0;
+	int actuator_idx_matrix[ActuatorEffectiveness::MAX_NUM_MATRICES] {};
+
+	for (int motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
+		const int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+		const auto &allocator = _control_allocation[selected_matrix];
+		const float actuator_sp = allocator->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+		const float actuator_min = allocator->getActuatorMin()(actuator_idx_matrix[selected_matrix]);
+		const float actuator_max = allocator->getActuatorMax()(actuator_idx_matrix[selected_matrix]);
+
+		if (actuator_sp > (actuator_max - FLT_EPSILON)) {
+			saturation[motors_idx] = control_allocator_ftc_debug_s::ACTUATOR_SATURATION_UPPER;
+
+		} else if (actuator_sp < (actuator_min + FLT_EPSILON)) {
+			saturation[motors_idx] = control_allocator_ftc_debug_s::ACTUATOR_SATURATION_LOWER;
+		}
+
+		++actuator_idx_matrix[selected_matrix];
+		++actuator_idx;
+	}
+}
+
+void
+ControlAllocator::publish_control_allocator_ftc_debug(const hrt_abstime now, const float pre_ftc[MAX_NUM_MOTORS],
+		const float post_ftc[MAX_NUM_MOTORS], const float final[MAX_NUM_MOTORS])
+{
+	control_allocator_ftc_debug_s debug{};
+	debug.timestamp = now;
+	debug.timestamp_sample = _timestamp_sample;
+	debug.ftc_active = _ftc_active;
+	debug.fault_motor_index = _ftc_fault_motor_idx >= 0 ? _ftc_fault_motor_idx + 1 : 0;
+	debug.handled_motor_failure_mask = _handled_motor_failure_bitmask;
+	debug.motor_stop_mask = _motor_stop_mask;
+	debug.loe = _ftc_current_loe;
+	debug.nominal_fault_command = _ftc_fault_nominal_command;
+	debug.applied_fault_command = _ftc_fault_applied_command;
+	debug.fault_command_limit = _ftc_fault_command_limit;
+	debug.residual_yaw_moment = _ftc_residual_yaw_moment;
+
+	for (int axis = 0; axis < 3; ++axis) {
+		debug.torque_setpoint[axis] = _torque_sp(axis);
+		debug.thrust_setpoint[axis] = _thrust_sp(axis);
+	}
+
+	fill_motor_saturation_from_allocation(debug.actuator_saturation);
+
+	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
+		debug.pre_ftc_control[i] = pre_ftc[i];
+		debug.post_ftc_control[i] = post_ftc[i];
+		debug.final_control[i] = final[i];
+	}
+
+	_control_allocator_ftc_debug_pub.publish(debug);
 }
 
 void
@@ -617,9 +711,18 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 		return;
 	}
 
-	const ActuatorEffectiveness::EffectivenessMatrix &effectiveness = _control_allocation[matrix_index]->getEffectivenessMatrix();
+	ControlAllocationPseudoInverse *pseudo_inverse_allocation =
+		dynamic_cast<ControlAllocationPseudoInverse *>(_control_allocation[matrix_index]);
+
+	if (pseudo_inverse_allocation == nullptr) {
+		return;
+	}
+
+	const matrix::Matrix<float, NUM_ACTUATORS, NUM_AXES> &mix = pseudo_inverse_allocation->getMixMatrix();
 	const ActuatorVector &actuator_min = _control_allocation[matrix_index]->getActuatorMin();
 	const ActuatorVector &actuator_max = _control_allocation[matrix_index]->getActuatorMax();
+	const ActuatorVector &actuator_trim = _control_allocation[matrix_index]->getActuatorTrim();
+	const matrix::Vector<float, NUM_AXES> &control_trim = _control_allocation[matrix_index]->getControlTrim();
 	ActuatorVector &actuator_sp = _control_allocation[matrix_index]->_actuator_sp;
 
 	const float nominal_fault_command = actuator_sp(fault_column);
@@ -634,9 +737,8 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 		return;
 	}
 
-	matrix::SquareMatrix<float, 3> reduced_effectiveness;
-	matrix::Vector3f reduced_target;
-	matrix::Vector3f fault_contribution;
+	matrix::SquareMatrix<float, 3> reduced_mix;
+	matrix::Vector3f reduced_control_delta;
 	int healthy_columns[3] {};
 	int healthy_count = 0;
 	int fault_motor_matrix_column = -1;
@@ -664,59 +766,27 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 
 	const int reduced_axes[3] {0, 1, 5};
 
-	for (int row = 0; row < 3; row++) {
-		fault_contribution(row) = effectiveness(reduced_axes[row], fault_motor_matrix_column) * applied_fault_command;
-		reduced_target(row) = control_sp(reduced_axes[row]) - fault_contribution(row);
+	for (int axis = 0; axis < 3; axis++) {
+		reduced_control_delta(axis) = control_sp(reduced_axes[axis]) - control_trim(reduced_axes[axis]);
 
-		for (int col = 0; col < 3; col++) {
-			reduced_effectiveness(row, col) = effectiveness(reduced_axes[row], healthy_columns[col]);
+		for (int motor = 0; motor < 3; motor++) {
+			reduced_mix(motor, axis) = mix(healthy_columns[motor], reduced_axes[axis]);
 		}
 	}
 
-	matrix::SquareMatrix<float, 3> reduced_inverse;
+	const matrix::Vector3f healthy_solution = reduced_mix * reduced_control_delta;
 
-	if (!matrix::inv(reduced_effectiveness, reduced_inverse)) {
-		matrix::Matrix<float, 3, 3> reduced_pseudo_inverse;
-
-		if (!matrix::geninv(reduced_effectiveness, reduced_pseudo_inverse)) {
-			PX4_WARN("FTC reduced allocation failed: singular matrix");
-			return;
-		}
-
-		for (int col = 0; col < 3; col++) {
-			float actuator_command = 0.f;
-
-			for (int row = 0; row < 3; row++) {
-				actuator_command += reduced_pseudo_inverse(col, row) * reduced_target(row);
-			}
-
-			actuator_sp(healthy_columns[col]) = math::constrain(actuator_command, actuator_min(healthy_columns[col]),
-						 actuator_max(healthy_columns[col]));
-		}
-
-	} else {
-		const matrix::Vector3f healthy_solution = reduced_inverse * reduced_target;
-
-		for (int col = 0; col < 3; col++) {
-			actuator_sp(healthy_columns[col]) = math::constrain(healthy_solution(col), actuator_min(healthy_columns[col]),
-						 actuator_max(healthy_columns[col]));
-		}
+	for (int col = 0; col < 3; col++) {
+		const float actuator_command = actuator_trim(healthy_columns[col]) + healthy_solution(col);
+		actuator_sp(healthy_columns[col]) = math::constrain(actuator_command, actuator_min(healthy_columns[col]),
+					 actuator_max(healthy_columns[col]));
 	}
 
 	actuator_sp(fault_motor_matrix_column) = math::constrain(applied_fault_command, actuator_min(fault_motor_matrix_column),
 				 actuator_max(fault_motor_matrix_column));
 
-	float actual_prop_yaw = 0.f;
-
-	for (int motor_idx = 0; motor_idx < motor_count && motor_idx < actuator_motors_s::NUM_CONTROLS; motor_idx++) {
-		int motor_matrix_column = -1;
-
-		if (get_motor_column_index(motor_idx, matrix_index, motor_matrix_column)) {
-			actual_prop_yaw += effectiveness(2, motor_matrix_column) * actuator_sp(motor_matrix_column);
-		}
-	}
-
-	_ftc_residual_yaw_moment = control_sp(2) - actual_prop_yaw;
+	const matrix::Vector<float, NUM_AXES> allocated_control = _control_allocation[matrix_index]->getAllocatedControl();
+	_ftc_residual_yaw_moment = control_sp(2) - allocated_control(2);
 	_reaction_wheel_torque_command = -_ftc_residual_yaw_moment;
 	_reaction_wheel_active = true;
 

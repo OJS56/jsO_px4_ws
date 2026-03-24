@@ -90,7 +90,7 @@ float ControlAllocationSequentialDesaturation::computeDesaturationGain(const Act
 {
 	float k_min = 0.f;
 	float k_max = 0.f;
-
+	
 	for (int i = 0; i < _num_actuators; i++) {
 		// Do not use try to desaturate using an actuator with weak effectiveness to avoid large desaturation gains
 		if (fabsf(desaturation_vector(i)) < 0.2f) {

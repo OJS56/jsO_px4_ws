@@ -216,6 +216,7 @@ void LoggedTopics::add_default_topics()
 	// additional control allocation logging
 	add_topic("actuator_motors", 100);
 	add_topic("actuator_servos", 100);
+	add_optional_topic("control_allocator_ftc_debug", 20);
 	add_topic_multi("vehicle_thrust_setpoint", 20, 2);
 	add_topic_multi("vehicle_torque_setpoint", 20, 2);
 
@@ -283,6 +284,7 @@ void LoggedTopics::add_high_rate_topics()
 
 	add_topic("esc_status", 5);
 	add_topic("actuator_motors");
+	add_optional_topic("control_allocator_ftc_debug");
 	add_topic("actuator_outputs_debug");
 	add_topic("actuator_servos");
 	add_topic_multi("vehicle_thrust_setpoint", 0, 2);

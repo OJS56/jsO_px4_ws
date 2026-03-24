@@ -154,6 +154,16 @@ public:
 	const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &getEffectivenessMatrix() const { return _effectiveness; }
 
 	/**
+	 * Get actuator trim used by the allocation.
+	 */
+	const ActuatorVector &getActuatorTrim() const { return _actuator_trim; }
+
+	/**
+	 * Get control trim used by the allocation.
+	 */
+	const matrix::Vector<float, NUM_AXES> &getControlTrim() const { return _control_trim; }
+
+	/**
 	 * Set the minimum actuator values
 	 *
 	 * @param actuator_min Minimum actuator values

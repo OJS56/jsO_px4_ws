@@ -72,6 +72,7 @@
 #include <uORB/topics/actuator_motors.h>
 #include <uORB/topics/actuator_servos.h>
 #include <uORB/topics/actuator_servos_trim.h>
+#include <uORB/topics/control_allocator_ftc_debug.h>
 #include <uORB/topics/control_allocator_status.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/reaction_wheel_setpoint.h>
@@ -144,8 +145,12 @@ private:
 	void check_for_motor_failures();
 
 	void publish_control_allocator_status(int matrix_index);
+	void publish_control_allocator_ftc_debug(const hrt_abstime now, const float pre_ftc[MAX_NUM_MOTORS],
+			const float post_ftc[MAX_NUM_MOTORS], const float final[MAX_NUM_MOTORS]);
 
 	void publish_actuator_controls();
+	void fill_motor_controls_from_allocation(float controls[MAX_NUM_MOTORS]) const;
+	void fill_motor_saturation_from_allocation(int8_t saturation[MAX_NUM_MOTORS]) const;
 
 	void handle_stopped_motors(const hrt_abstime now);
 
@@ -199,6 +204,7 @@ private:
 	uORB::Subscription _vehicle_thrust_setpoint1_sub{ORB_ID(vehicle_thrust_setpoint), 1};	 /**< vehicle thrust setpoint subscription (2. instance) */
 
 	// Outputs
+	uORB::Publication<control_allocator_ftc_debug_s> _control_allocator_ftc_debug_pub{ORB_ID(control_allocator_ftc_debug)};
 	uORB::PublicationMulti<control_allocator_status_s> _control_allocator_status_pub[2] {ORB_ID(control_allocator_status), ORB_ID(control_allocator_status)};
 
 	uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
