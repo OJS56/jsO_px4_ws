@@ -99,6 +99,7 @@ px4_add_romfs_files(
 	10017_jmavsim_iris
 	10018_gazebo-classic_iris_foggy_lidar
 	10019_gazebo-classic_omnicopter
+	10020_gazebo-classic_iris_ftc
 	10030_gazebo-classic_px4vision
 
 	10040_sihsim_quadx
