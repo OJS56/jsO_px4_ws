@@ -5,6 +5,9 @@ uint64 timestamp                        # time since system start (microseconds)
 uint64 timestamp_sample                 # timestamp of the input setpoints used for this allocation cycle
 
 bool ftc_active                        # true when FTC logic is active for this cycle
+bool fault_trigger_active              # true when the configured FTC fault scenario has been triggered
+bool degraded_allocation_active        # true when degraded 3x3 allocation is applied this cycle
+bool output_fault_active               # true when output-stage fault clamping is applied this cycle
 uint8 fault_motor_index                # 1-based motor index selected by FTC, 0 if inactive
 uint16 handled_motor_failure_mask      # motors removed from effectiveness by failure handling
 uint16 motor_stop_mask                 # motors stopped by failure injection
@@ -28,4 +31,4 @@ int8[12] actuator_saturation           # saturation state of each motor after fi
 
 float32[12] pre_ftc_control            # motor inputs after normal allocation, before FTC reallocation
 float32[12] post_ftc_control           # motor inputs after FTC reallocation and stopped-motor handling
-float32[12] final_control              # motor inputs after slew-rate limiting and final clipping
+float32[12] final_control              # motor inputs after output-stage fault clamping and final publish shaping

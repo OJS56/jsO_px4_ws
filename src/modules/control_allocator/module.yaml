@@ -696,12 +696,12 @@ parameters:
             description:
                 short: FTC allocation mode
                 long: |
-                    Selects the control allocation mode used when FTC is active.
-                    Normal keeps standard allocation, while Degraded applies fault-tolerant behavior.
+                    Selects whether the allocator stays in nominal 4x4 allocation or switches to degraded 3x3 allocation
+                    after the FTC fault trigger becomes active.
             type: enum
             values:
-                0: Normal
-                1: Degraded
+                0: Nominal 4x4
+                1: Degraded 3x3
             default: 0
 
         CA_ICE_PERIOD:

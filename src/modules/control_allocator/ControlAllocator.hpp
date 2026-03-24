@@ -150,6 +150,7 @@ private:
 
 	void publish_actuator_controls();
 	void fill_motor_controls_from_allocation(float controls[MAX_NUM_MOTORS]) const;
+	void fill_motor_outputs_for_publish(float controls[MAX_NUM_MOTORS]) const;
 	void fill_motor_saturation_from_allocation(int8_t saturation[MAX_NUM_MOTORS]) const;
 
 	void handle_stopped_motors(const hrt_abstime now);
@@ -160,6 +161,8 @@ private:
 	void update_reaction_wheel_setpoint(float torque_command, float residual_yaw_moment, bool active, hrt_abstime now);
 	bool get_motor_column_index(int motor_idx, int matrix_index, int &matrix_column) const;
 	void apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now);
+	void apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const;
+	float get_ftc_fault_output_limit() const;
 
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
@@ -188,6 +191,11 @@ private:
 	enum class FailureMode {
 		IGNORE = 0,
 		REMOVE_FIRST_FAILING_MOTOR = 1,
+	};
+
+	enum class FtcAllocationMode {
+		NOMINAL_4X4 = 0,
+		DEGRADED_3X3 = 1,
 	};
 
 	EffectivenessSource _effectiveness_source_id{EffectivenessSource::NONE};
@@ -231,7 +239,9 @@ private:
 
 	bool _armed{false};
 	bool _is_vtol{false};
-	bool _ftc_active{false};
+	bool _ftc_fault_trigger_active{false};
+	bool _ftc_degraded_allocation_active{false};
+	bool _ftc_output_fault_active{false};
 	bool _ftc_triggered_once{false};
 	int _ftc_fault_type{0};
 	int _ftc_fault_motor_idx{-1};
@@ -263,7 +273,8 @@ private:
 		(ParamInt<px4::params::CA_FTC_MOT>) _param_ca_ftc_mot,
 		(ParamInt<px4::params::CA_FTC_TYPE>) _param_ca_ftc_type,
 		(ParamFloat<px4::params::CA_FTC_LOE>) _param_ca_ftc_loe,
-		(ParamFloat<px4::params::CA_FTC_TRIG_T>) _param_ca_ftc_trig_t
+		(ParamFloat<px4::params::CA_FTC_TRIG_T>) _param_ca_ftc_trig_t,
+		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode
 	)
 
 };

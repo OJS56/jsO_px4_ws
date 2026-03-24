@@ -347,7 +347,9 @@ ControlAllocator::Run()
 
 			if (_armed && !was_armed) {
 				_ftc_start_time = hrt_absolute_time();
-				_ftc_active = false;
+				_ftc_fault_trigger_active = false;
+				_ftc_degraded_allocation_active = false;
+				_ftc_output_fault_active = false;
 				_ftc_triggered_once = false;
 				_ftc_fault_type = 0;
 				_ftc_fault_timestamp = 0;
@@ -362,7 +364,9 @@ ControlAllocator::Run()
 
 			} else if (!_armed && was_armed) {
 				_ftc_start_time = 0;
-				_ftc_active = false;
+				_ftc_fault_trigger_active = false;
+				_ftc_degraded_allocation_active = false;
+				_ftc_output_fault_active = false;
 				_ftc_triggered_once = false;
 				_ftc_fault_type = 0;
 				_ftc_fault_timestamp = 0;
@@ -477,7 +481,9 @@ ControlAllocator::Run()
 
 			if (i == 0) {
 				fill_motor_controls_from_allocation(pre_ftc_motor_controls);
-				apply_active_ftc_allocation(i, c[i], now);
+				if (_ftc_degraded_allocation_active) {
+					apply_active_ftc_allocation(i, c[i], now);
+				}
 				// The motors are always in allocation 0
 				handle_stopped_motors(now);
 				fill_motor_controls_from_allocation(post_ftc_motor_controls);
@@ -490,7 +496,7 @@ ControlAllocator::Run()
 			_control_allocation[i]->clipActuatorSetpoint();
 
 			if (i == 0) {
-				fill_motor_controls_from_allocation(final_motor_controls);
+				fill_motor_outputs_for_publish(final_motor_controls);
 			}
 		}
 
@@ -538,6 +544,13 @@ ControlAllocator::fill_motor_controls_from_allocation(float controls[MAX_NUM_MOT
 }
 
 void
+ControlAllocator::fill_motor_outputs_for_publish(float controls[MAX_NUM_MOTORS]) const
+{
+	fill_motor_controls_from_allocation(controls);
+	apply_ftc_output_fault(controls);
+}
+
+void
 ControlAllocator::fill_motor_saturation_from_allocation(int8_t saturation[MAX_NUM_MOTORS]) const
 {
 	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
@@ -573,7 +586,10 @@ ControlAllocator::publish_control_allocator_ftc_debug(const hrt_abstime now, con
 	control_allocator_ftc_debug_s debug{};
 	debug.timestamp = now;
 	debug.timestamp_sample = _timestamp_sample;
-	debug.ftc_active = _ftc_active;
+	debug.ftc_active = _ftc_fault_trigger_active;
+	debug.fault_trigger_active = _ftc_fault_trigger_active;
+	debug.degraded_allocation_active = _ftc_degraded_allocation_active;
+	debug.output_fault_active = _ftc_output_fault_active;
 	debug.fault_motor_index = _ftc_fault_motor_idx >= 0 ? _ftc_fault_motor_idx + 1 : 0;
 	debug.handled_motor_failure_mask = _handled_motor_failure_bitmask;
 	debug.motor_stop_mask = _motor_stop_mask;
@@ -603,7 +619,9 @@ void
 ControlAllocator::update_ftc_state(hrt_abstime now)
 {
 	if (!_armed || _param_ca_ftc_en.get() == 0) {
-		_ftc_active = false;
+		_ftc_fault_trigger_active = false;
+		_ftc_degraded_allocation_active = false;
+		_ftc_output_fault_active = false;
 		return;
 	}
 
@@ -614,7 +632,9 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 	const int configured_fault_type = _param_ca_ftc_type.get();
 
 	if (configured_fault_type == 0) {
-		_ftc_active = false;
+		_ftc_fault_trigger_active = false;
+		_ftc_degraded_allocation_active = false;
+		_ftc_output_fault_active = false;
 		return;
 	}
 
@@ -623,7 +643,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 	const float trigger_time = _param_ca_ftc_trig_t.get();
 
 	if (!_ftc_triggered_once && in_hover && elapsed >= trigger_time) {
-		_ftc_active = true;
+		_ftc_fault_trigger_active = true;
 		_ftc_triggered_once = true;
 		_ftc_fault_type = configured_fault_type;
 		_ftc_fault_timestamp = now;
@@ -648,6 +668,14 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 		PX4_WARN("FTC fault triggered: motor=%d type=%s lambda=%.2f elapsed=%.2fs",
 			 _ftc_fault_motor_idx + 1, fault_type_str, (double)_ftc_current_loe, (double)elapsed);
 	}
+
+	if (!_ftc_triggered_once) {
+		_ftc_fault_trigger_active = false;
+	}
+
+	_ftc_degraded_allocation_active = _ftc_fault_trigger_active
+					  && ((FtcAllocationMode)_param_ca_ftc_alc_mode.get() == FtcAllocationMode::DEGRADED_3X3);
+	_ftc_output_fault_active = _ftc_fault_trigger_active;
 }
 
 void
@@ -695,7 +723,7 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	_reaction_wheel_torque_command = 0.f;
 	_reaction_wheel_active = false;
 
-	if (!_ftc_active || _ftc_fault_motor_idx < 0 || matrix_index != 0) {
+	if (!_ftc_fault_trigger_active || _ftc_fault_motor_idx < 0 || matrix_index != 0) {
 		return;
 	}
 
@@ -796,6 +824,45 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 			 (double)_ftc_fault_command_limit, (double)_ftc_residual_yaw_moment,
 			 (double)_reaction_wheel_torque_command, (double)(now / 1e6));
 	}
+}
+
+float
+ControlAllocator::get_ftc_fault_output_limit() const
+{
+	if (_ftc_fault_motor_idx < 0 || _num_control_allocation == 0 || _control_allocation[0] == nullptr) {
+		return NAN;
+	}
+
+	int fault_column = -1;
+
+	if (!get_motor_column_index(_ftc_fault_motor_idx, 0, fault_column)) {
+		return NAN;
+	}
+
+	const ActuatorVector &actuator_max = _control_allocation[0]->getActuatorMax();
+	return actuator_max(fault_column) * _ftc_current_loe;
+}
+
+void
+ControlAllocator::apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const
+{
+	if (!_ftc_output_fault_active || _ftc_fault_motor_idx < 0 || _ftc_fault_motor_idx >= MAX_NUM_MOTORS) {
+		return;
+	}
+
+	float &fault_control = controls[_ftc_fault_motor_idx];
+
+	if (!PX4_ISFINITE(fault_control)) {
+		return;
+	}
+
+	const float fault_limit = get_ftc_fault_output_limit();
+
+	if (!PX4_ISFINITE(fault_limit)) {
+		return;
+	}
+
+	fault_control = fminf(fault_control, fault_limit);
 }
 
 void
@@ -1052,34 +1119,26 @@ ControlAllocator::publish_actuator_controls()
 	actuator_servos.timestamp_sample = _timestamp_sample;
 
 	actuator_motors.reversible_flags = _param_r_rev.get();
-
-	int actuator_idx = 0;
-	int actuator_idx_matrix[ActuatorEffectiveness::MAX_NUM_MATRICES] {};
-
-	// motors
-	int motors_idx;
-
-	for (motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
-		int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
-		float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
-		actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
-		++actuator_idx_matrix[selected_matrix];
-		++actuator_idx;
-	}
-
-	for (int i = motors_idx; i < actuator_motors_s::NUM_CONTROLS; i++) {
-		actuator_motors.control[i] = NAN;
-	}
+	fill_motor_outputs_for_publish(actuator_motors.control);
 
 	_actuator_motors_pub.publish(actuator_motors);
 
 	// servos
 	if (_num_actuators[1] > 0) {
+		int actuator_idx = _num_actuators[(int)ActuatorType::MOTORS];
+		int actuator_idx_matrix[ActuatorEffectiveness::MAX_NUM_MATRICES] {};
+
+		for (int motor_idx = 0; motor_idx < _num_actuators[(int)ActuatorType::MOTORS]
+		     && motor_idx < actuator_motors_s::NUM_CONTROLS; motor_idx++) {
+			const int selected_matrix = _control_allocation_selection_indexes[motor_idx];
+			++actuator_idx_matrix[selected_matrix];
+		}
+
 		int servos_idx;
 
 		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
-			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
-			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+			const int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+			const float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
 			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
 			++actuator_idx_matrix[selected_matrix];
 			++actuator_idx;
@@ -1190,14 +1249,16 @@ int ControlAllocator::print_status()
 	}
 
 	PX4_INFO("FTC: %s, triggered=%s, arm_ref=%.3fs, fault_time=%.3fs, motor=%d, type=%s, lambda=%.2f",
-		 _ftc_active ? "active" : "inactive",
+		 _ftc_fault_trigger_active ? "active" : "inactive",
 		 _ftc_triggered_once ? "yes" : "no",
 		 (double)(_ftc_start_time / 1e6),
 		 (double)(_ftc_fault_timestamp / 1e6),
 		 _ftc_fault_motor_idx >= 0 ? _ftc_fault_motor_idx + 1 : 0,
 		 fault_type_str,
 		 (double)_ftc_current_loe);
-	PX4_INFO("FTC alloc: nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f wheel_active=%s",
+	PX4_INFO("FTC alloc: degraded=%s output_fault=%s nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f wheel_active=%s",
+		 _ftc_degraded_allocation_active ? "yes" : "no",
+		 _ftc_output_fault_active ? "yes" : "no",
 		 (double)_ftc_fault_nominal_command,
 		 (double)_ftc_fault_applied_command,
 		 (double)_ftc_fault_command_limit,
