@@ -635,6 +635,12 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 			_ftc_mode = ((FtcAllocationMode)_param_ca_ftc_alc_mode.get() == FtcAllocationMode::DEGRADED_3X3)
 				? FtcMode::FAULT_DEGRADED : FtcMode::FAULT_NOMINAL;
 			_ftc_fault_timestamp = now;
+			const char *fault_type_str = (_param_ca_ftc_type.get() == 1) ? "LOE"
+				: (_param_ca_ftc_type.get() == 2) ? "Saturation" : "unknown";
+			const char *mode_str = (_ftc_mode == FtcMode::FAULT_DEGRADED) ? "fault_degraded" : "fault_nominal";
+			PX4_WARN("FTC mode %s: motor=%d type=%s lambda=%.2f time=%.2f",
+				 mode_str, math::constrain(_param_ca_ftc_mot.get(), 1, (int)actuator_motors_s::NUM_CONTROLS), fault_type_str,
+				 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), (double)elapsed);
 		}
 
 		if (_ftc_triggered_once) {
