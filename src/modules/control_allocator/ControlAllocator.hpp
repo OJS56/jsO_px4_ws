@@ -81,6 +81,7 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/manual_control_setpoint.h>
 
 class ControlAllocator : public ModuleBase, public ModuleParams, public px4::ScheduledWorkItem
 {
@@ -163,6 +164,7 @@ private:
 	void apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now);
 	void apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const;
 	float get_ftc_fault_output_limit() const;
+	float get_selected_ftc_aux_value() const;
 
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
@@ -198,6 +200,17 @@ private:
 		DEGRADED_3X3 = 1,
 	};
 
+	enum class FtcMode {
+		NORMAL = 0,
+		FAULT_DEGRADED = 1,
+		FAULT_NOMINAL = 2,
+	};
+
+	enum class FtcTriggerMode {
+		TIME = 0,
+		AUX = 1,
+	};
+
 	EffectivenessSource _effectiveness_source_id{EffectivenessSource::NONE};
 	ActuatorEffectiveness *_actuator_effectiveness{nullptr}; 	///< class providing actuator effectiveness
 
@@ -225,10 +238,12 @@ private:
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _failure_detector_status_sub{ORB_ID(failure_detector_status)};
+	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
 	bool _publish_controls{true};
+	manual_control_setpoint_s _manual_control_setpoint{};
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
 	// For example, the system might report two motor failures, but only the first one is handled by CA
@@ -243,6 +258,7 @@ private:
 	bool _ftc_degraded_allocation_active{false};
 	bool _ftc_output_fault_active{false};
 	bool _ftc_triggered_once{false};
+	FtcMode _ftc_mode{FtcMode::NORMAL};
 	int _ftc_fault_type{0};
 	int _ftc_fault_motor_idx{-1};
 	hrt_abstime _ftc_start_time{0};
@@ -273,7 +289,9 @@ private:
 		(ParamInt<px4::params::CA_FTC_MOT>) _param_ca_ftc_mot,
 		(ParamInt<px4::params::CA_FTC_TYPE>) _param_ca_ftc_type,
 		(ParamFloat<px4::params::CA_FTC_LOE>) _param_ca_ftc_loe,
+		(ParamInt<px4::params::CA_FTC_TRIG_MODE>) _param_ca_ftc_trig_mode,
 		(ParamFloat<px4::params::CA_FTC_TRIG_T>) _param_ca_ftc_trig_t,
+		(ParamInt<px4::params::CA_FTC_TRIG_SRC>) _param_ca_ftc_trig_src,
 		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode
 	)
 

@@ -666,11 +666,25 @@ parameters:
             max: 1.0
             default: 0.85
 
+        CA_FTC_TRIG_MODE:
+            description:
+                short: FTC trigger mode
+                long: |
+                    Selects how the FTC fault trigger is activated.
+                    Time mode uses CA_FTC_TRIG_T and CA_FTC_ALC_MODE.
+                    AUX mode uses CA_FTC_TRIG_SRC and the 3-position switch mapping -1=fault degraded, 0=normal, +1=fault nominal.
+            type: enum
+            values:
+                0: Time
+                1: AUX switch
+            default: 0
+
         CA_FTC_TRIG_T:
             description:
                 short: FTC trigger time
                 long: |
-                    Time in seconds before FTC behavior is triggered after arming or scenario start.
+                    Delay before FTC becomes active when CA_FTC_TRIG_MODE is set to Time.
+                    Ignored in AUX switch mode.
             type: float
             decimal: 2
             increment: 0.1
@@ -678,6 +692,23 @@ parameters:
             min: 0.0
             max: 60.0
             default: 3.0
+
+        CA_FTC_TRIG_SRC:
+            description:
+                short: FTC trigger AUX source
+                long: |
+                    Selects which manual_control_setpoint auxiliary input is used as the 3-position FTC mode switch when CA_FTC_TRIG_MODE is AUX switch.
+                    Expected mapping is -1 for fault degraded, 0 for normal, and +1 for fault nominal.
+            type: enum
+            values:
+                0: Disabled
+                1: AUX1
+                2: AUX2
+                3: AUX3
+                4: AUX4
+                5: AUX5
+                6: AUX6
+            default: 0
 
         CA_FTC_YAW_SCL:
             description:

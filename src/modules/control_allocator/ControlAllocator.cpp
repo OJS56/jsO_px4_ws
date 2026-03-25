@@ -345,30 +345,14 @@ ControlAllocator::Run()
 			_armed = vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
 			_is_vtol = vehicle_status.is_vtol;
 
-			if (_armed && !was_armed) {
-				_ftc_start_time = hrt_absolute_time();
+			if (_armed != was_armed) {
 				_ftc_fault_trigger_active = false;
 				_ftc_degraded_allocation_active = false;
 				_ftc_output_fault_active = false;
 				_ftc_triggered_once = false;
+				_ftc_mode = FtcMode::NORMAL;
 				_ftc_fault_type = 0;
-				_ftc_fault_timestamp = 0;
-				_ftc_fault_motor_idx = -1;
-				_ftc_current_loe = 1.f;
-				_ftc_fault_nominal_command = 0.f;
-				_ftc_fault_applied_command = 0.f;
-				_ftc_fault_command_limit = 1.f;
-				_ftc_residual_yaw_moment = 0.f;
-				_reaction_wheel_torque_command = 0.f;
-				_reaction_wheel_active = false;
-
-			} else if (!_armed && was_armed) {
-				_ftc_start_time = 0;
-				_ftc_fault_trigger_active = false;
-				_ftc_degraded_allocation_active = false;
-				_ftc_output_fault_active = false;
-				_ftc_triggered_once = false;
-				_ftc_fault_type = 0;
+				_ftc_start_time = _armed ? hrt_absolute_time() : 0;
 				_ftc_fault_timestamp = 0;
 				_ftc_fault_motor_idx = -1;
 				_ftc_current_loe = 1.f;
@@ -618,64 +602,126 @@ ControlAllocator::publish_control_allocator_ftc_debug(const hrt_abstime now, con
 void
 ControlAllocator::update_ftc_state(hrt_abstime now)
 {
-	if (!_armed || _param_ca_ftc_en.get() == 0) {
+	manual_control_setpoint_s manual_control_setpoint{};
+
+	if (_manual_control_setpoint_sub.update(&manual_control_setpoint)) {
+		_manual_control_setpoint = manual_control_setpoint;
+	}
+
+	const FtcMode previous_mode = _ftc_mode;
+	_ftc_mode = FtcMode::NORMAL;
+
+	if (!_armed || _param_ca_ftc_en.get() == 0 || _param_ca_ftc_type.get() == 0) {
 		_ftc_fault_trigger_active = false;
 		_ftc_degraded_allocation_active = false;
 		_ftc_output_fault_active = false;
 		return;
 	}
 
-	if (_ftc_start_time == 0) {
-		_ftc_start_time = now;
+	const FtcTriggerMode trigger_mode = static_cast<FtcTriggerMode>(_param_ca_ftc_trig_mode.get());
+
+	switch (trigger_mode) {
+	case FtcTriggerMode::TIME: {
+		if (_ftc_start_time == 0) {
+			_ftc_start_time = now;
+		}
+
+		const bool in_hover = _actuator_effectiveness->getFlightPhase() == ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT;
+		const float elapsed = (now - _ftc_start_time) / 1e6f;
+		const float trigger_time = _param_ca_ftc_trig_t.get();
+
+		if (!_ftc_triggered_once && in_hover && elapsed >= trigger_time) {
+			_ftc_triggered_once = true;
+			_ftc_mode = ((FtcAllocationMode)_param_ca_ftc_alc_mode.get() == FtcAllocationMode::DEGRADED_3X3)
+				? FtcMode::FAULT_DEGRADED : FtcMode::FAULT_NOMINAL;
+			_ftc_fault_timestamp = now;
+		}
+
+		if (_ftc_triggered_once) {
+			_ftc_mode = ((FtcAllocationMode)_param_ca_ftc_alc_mode.get() == FtcAllocationMode::DEGRADED_3X3)
+				? FtcMode::FAULT_DEGRADED : FtcMode::FAULT_NOMINAL;
+		}
+
+		break;
 	}
 
-	const int configured_fault_type = _param_ca_ftc_type.get();
+	case FtcTriggerMode::AUX: {
+		if (!_manual_control_setpoint.valid || _param_ca_ftc_trig_src.get() <= 0) {
+			_ftc_fault_trigger_active = false;
+			_ftc_degraded_allocation_active = false;
+			_ftc_output_fault_active = false;
+			return;
+		}
 
-	if (configured_fault_type == 0) {
-		_ftc_fault_trigger_active = false;
-		_ftc_degraded_allocation_active = false;
-		_ftc_output_fault_active = false;
-		return;
+		const float aux_value = get_selected_ftc_aux_value();
+
+		if (PX4_ISFINITE(aux_value)) {
+			if (aux_value < -0.5f) {
+				_ftc_mode = FtcMode::FAULT_DEGRADED;
+
+			} else if (aux_value > 0.5f) {
+				_ftc_mode = FtcMode::FAULT_NOMINAL;
+			}
+		}
+
+		if (_ftc_mode != FtcMode::NORMAL && previous_mode != _ftc_mode) {
+			_ftc_fault_timestamp = now;
+			const char *fault_type_str = (_param_ca_ftc_type.get() == 1) ? "LOE"
+				: (_param_ca_ftc_type.get() == 2) ? "Saturation" : "unknown";
+			const char *mode_str = (_ftc_mode == FtcMode::FAULT_DEGRADED) ? "fault_degraded" : "fault_nominal";
+			PX4_WARN("FTC mode %s: motor=%d type=%s lambda=%.2f aux=%.2f",
+				 mode_str, math::constrain(_param_ca_ftc_mot.get(), 1, (int)actuator_motors_s::NUM_CONTROLS), fault_type_str,
+				 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), (double)aux_value);
+		}
+
+		break;
 	}
 
-	const bool in_hover = _actuator_effectiveness->getFlightPhase() == ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT;
-	const float elapsed = (now - _ftc_start_time) / 1e6f;
-	const float trigger_time = _param_ca_ftc_trig_t.get();
+	default:
+		break;
+	}
 
-	if (!_ftc_triggered_once && in_hover && elapsed >= trigger_time) {
-		_ftc_fault_trigger_active = true;
-		_ftc_triggered_once = true;
-		_ftc_fault_type = configured_fault_type;
-		_ftc_fault_timestamp = now;
+	_ftc_fault_trigger_active = _ftc_mode != FtcMode::NORMAL;
+	_ftc_degraded_allocation_active = _ftc_mode == FtcMode::FAULT_DEGRADED;
+	_ftc_output_fault_active = _ftc_fault_trigger_active;
+
+	if (_ftc_fault_trigger_active) {
+		_ftc_fault_type = _param_ca_ftc_type.get();
 		_ftc_fault_motor_idx = math::constrain(_param_ca_ftc_mot.get() - 1, 0, actuator_motors_s::NUM_CONTROLS - 1);
 		_ftc_current_loe = math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f);
 
-		const char *fault_type_str = "unknown";
-
-		switch (_ftc_fault_type) {
-		case 1:
-			fault_type_str = "LOE";
-			break;
-
-		case 2:
-			fault_type_str = "Saturation";
-			break;
-
-		default:
-			break;
-		}
-
-		PX4_WARN("FTC fault triggered: motor=%d type=%s lambda=%.2f elapsed=%.2fs",
-			 _ftc_fault_motor_idx + 1, fault_type_str, (double)_ftc_current_loe, (double)elapsed);
+	} else {
+		_ftc_fault_type = 0;
+		_ftc_fault_motor_idx = -1;
+		_ftc_current_loe = 1.f;
 	}
+}
 
-	if (!_ftc_triggered_once) {
-		_ftc_fault_trigger_active = false;
+float
+ControlAllocator::get_selected_ftc_aux_value() const
+{
+	switch (_param_ca_ftc_trig_src.get()) {
+	case 1:
+		return _manual_control_setpoint.aux1;
+
+	case 2:
+		return _manual_control_setpoint.aux2;
+
+	case 3:
+		return _manual_control_setpoint.aux3;
+
+	case 4:
+		return _manual_control_setpoint.aux4;
+
+	case 5:
+		return _manual_control_setpoint.aux5;
+
+	case 6:
+		return _manual_control_setpoint.aux6;
+
+	default:
+		return NAN;
 	}
-
-	_ftc_degraded_allocation_active = _ftc_fault_trigger_active
-					  && ((FtcAllocationMode)_param_ca_ftc_alc_mode.get() == FtcAllocationMode::DEGRADED_3X3);
-	_ftc_output_fault_active = _ftc_fault_trigger_active;
 }
 
 void
@@ -1248,14 +1294,33 @@ int ControlAllocator::print_status()
 		break;
 	}
 
-	PX4_INFO("FTC: %s, triggered=%s, arm_ref=%.3fs, fault_time=%.3fs, motor=%d, type=%s, lambda=%.2f",
+	const char *mode_str = "normal";
+
+	switch (_ftc_mode) {
+	case FtcMode::FAULT_DEGRADED:
+		mode_str = "fault_degraded";
+		break;
+
+	case FtcMode::FAULT_NOMINAL:
+		mode_str = "fault_nominal";
+		break;
+
+	case FtcMode::NORMAL:
+	default:
+		break;
+	}
+
+	const char *trigger_mode_str = (_param_ca_ftc_trig_mode.get() == 1) ? "aux" : "time";
+
+	PX4_INFO("FTC: %s, trigger=%s, mode=%s, fault_time=%.3fs, motor=%d, type=%s, lambda=%.2f",
 		 _ftc_fault_trigger_active ? "active" : "inactive",
-		 _ftc_triggered_once ? "yes" : "no",
-		 (double)(_ftc_start_time / 1e6),
+		 trigger_mode_str,
+		 mode_str,
 		 (double)(_ftc_fault_timestamp / 1e6),
 		 _ftc_fault_motor_idx >= 0 ? _ftc_fault_motor_idx + 1 : 0,
 		 fault_type_str,
 		 (double)_ftc_current_loe);
+
 	PX4_INFO("FTC alloc: degraded=%s output_fault=%s nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f wheel_active=%s",
 		 _ftc_degraded_allocation_active ? "yes" : "no",
 		 _ftc_output_fault_active ? "yes" : "no",
