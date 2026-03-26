@@ -671,34 +671,33 @@ parameters:
                 short: FTC trigger mode
                 long: |
                     Selects how the FTC fault trigger is activated.
-                    Time mode uses CA_FTC_TRIG_T and CA_FTC_ALC_MODE.
                     AUX mode uses CA_FTC_TRIG_SRC and the 3-position switch mapping -1=fault degraded, 0=normal, +1=fault nominal.
+                    Param mode uses CA_FTC_STATE for direct in-flight state selection from the shell or QGC.
             type: enum
             values:
-                0: Time
-                1: AUX switch
+                0: AUX switch
+                1: Param state
             default: 0
 
-        CA_FTC_TRIG_T:
+        CA_FTC_STATE:
             description:
-                short: FTC trigger time
+                short: FTC trigger state
                 long: |
-                    Delay before FTC becomes active when CA_FTC_TRIG_MODE is set to Time.
-                    Ignored in AUX switch mode.
-            type: float
-            decimal: 2
-            increment: 0.1
-            unit: s
-            min: 0.0
-            max: 60.0
-            default: 3.0
+                    Directly selects the FTC state when CA_FTC_TRIG_MODE is set to Param.
+                    Use this for SITL or bench testing with `param set CA_FTC_STATE <state>`.
+            type: enum
+            values:
+                0: Normal
+                1: Fault degraded
+                2: Fault nominal
+            default: 0
 
         CA_FTC_TRIG_SRC:
             description:
                 short: FTC trigger AUX source
                 long: |
                     Selects which manual_control_setpoint auxiliary input is used as the 3-position FTC mode switch when CA_FTC_TRIG_MODE is AUX switch.
-                    Expected mapping is -1 for fault degraded, 0 for normal, and +1 for fault nominal.
+                    Ignored in Param mode. Expected mapping is -1 for fault degraded, 0 for normal, and +1 for fault nominal.
             type: enum
             values:
                 0: Disabled
@@ -728,7 +727,8 @@ parameters:
                 short: FTC allocation mode
                 long: |
                     Selects whether the allocator stays in nominal 4x4 allocation or switches to degraded 3x3 allocation
-                    after the FTC fault trigger becomes active.
+                    after the AUX FTC fault trigger becomes active.
+                    In Param mode, CA_FTC_STATE=1 forces degraded allocation and CA_FTC_STATE=2 forces nominal allocation.
             type: enum
             values:
                 0: Nominal 4x4

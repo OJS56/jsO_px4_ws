@@ -207,8 +207,8 @@ private:
 	};
 
 	enum class FtcTriggerMode {
-		TIME = 0,
-		AUX = 1,
+		AUX = 0,
+		PARAM = 1,
 	};
 
 	EffectivenessSource _effectiveness_source_id{EffectivenessSource::NONE};
@@ -257,11 +257,9 @@ private:
 	bool _ftc_fault_trigger_active{false};
 	bool _ftc_degraded_allocation_active{false};
 	bool _ftc_output_fault_active{false};
-	bool _ftc_triggered_once{false};
 	FtcMode _ftc_mode{FtcMode::NORMAL};
 	int _ftc_fault_type{0};
 	int _ftc_fault_motor_idx{-1};
-	hrt_abstime _ftc_start_time{0};
 	hrt_abstime _ftc_fault_timestamp{0};
 	float _ftc_current_loe{1.f};
 	float _ftc_fault_nominal_command{0.f};
@@ -290,7 +288,7 @@ private:
 		(ParamInt<px4::params::CA_FTC_TYPE>) _param_ca_ftc_type,
 		(ParamFloat<px4::params::CA_FTC_LOE>) _param_ca_ftc_loe,
 		(ParamInt<px4::params::CA_FTC_TRIG_MODE>) _param_ca_ftc_trig_mode,
-		(ParamFloat<px4::params::CA_FTC_TRIG_T>) _param_ca_ftc_trig_t,
+		(ParamInt<px4::params::CA_FTC_STATE>) _param_ca_ftc_state,
 		(ParamInt<px4::params::CA_FTC_TRIG_SRC>) _param_ca_ftc_trig_src,
 		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode
 	)
