@@ -627,16 +627,16 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 			: (_param_ca_ftc_type.get() == 2) ? "Saturation" : "unknown";
 		const char *mode_str = (mode == FtcMode::FAULT_DEGRADED) ? "fault_degraded" : "fault_nominal";
 
-		if (integer_value) {
-			PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.0f",
-				 mode_str, math::constrain(_param_ca_ftc_mot.get(), 1, (int)actuator_motors_s::NUM_CONTROLS), fault_type_str,
-				 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), source_label, source_value);
+			if (integer_value) {
+				PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.0f",
+					 mode_str, static_cast<int>(math::constrain(_param_ca_ftc_mot.get(), int32_t{1}, int32_t{actuator_motors_s::NUM_CONTROLS})), fault_type_str,
+					 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), source_label, source_value);
 
-		} else {
-			PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.2f",
-				 mode_str, math::constrain(_param_ca_ftc_mot.get(), 1, (int)actuator_motors_s::NUM_CONTROLS), fault_type_str,
-				 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), source_label, source_value);
-		}
+			} else {
+				PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.2f",
+					 mode_str, static_cast<int>(math::constrain(_param_ca_ftc_mot.get(), int32_t{1}, int32_t{actuator_motors_s::NUM_CONTROLS})), fault_type_str,
+					 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), source_label, source_value);
+			}
 	};
 
 	switch (trigger_mode) {
@@ -684,6 +684,31 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 		break;
 	}
 
+	case FtcTriggerMode::BUTTONS: {
+		if (!_manual_control_setpoint.valid) {
+			_ftc_fault_trigger_active = false;
+			_ftc_degraded_allocation_active = false;
+			_ftc_output_fault_active = false;
+			return;
+		}
+
+		const bool degraded_pressed = is_ftc_button_pressed(_param_ca_ftc_btn_deg.get());
+		const bool nominal_pressed = is_ftc_button_pressed(_param_ca_ftc_btn_nom.get());
+
+		if (degraded_pressed != nominal_pressed) {
+			if (degraded_pressed) {
+				_ftc_mode = FtcMode::FAULT_DEGRADED;
+				report_ftc_transition(_ftc_mode, "buttons", (double)_param_ca_ftc_btn_deg.get(), true);
+
+			} else {
+				_ftc_mode = FtcMode::FAULT_NOMINAL;
+				report_ftc_transition(_ftc_mode, "buttons", (double)_param_ca_ftc_btn_nom.get(), true);
+			}
+		}
+
+		break;
+	}
+
 	default:
 		break;
 	}
@@ -694,7 +719,8 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 
 	if (_ftc_fault_trigger_active) {
 		_ftc_fault_type = _param_ca_ftc_type.get();
-		_ftc_fault_motor_idx = math::constrain(_param_ca_ftc_mot.get() - 1, 0, actuator_motors_s::NUM_CONTROLS - 1);
+		_ftc_fault_motor_idx = math::constrain(_param_ca_ftc_mot.get() - 1, int32_t{0},
+					      int32_t{actuator_motors_s::NUM_CONTROLS - 1});
 		_ftc_current_loe = math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f);
 
 	} else {
@@ -729,6 +755,16 @@ ControlAllocator::get_selected_ftc_aux_value() const
 	default:
 		return NAN;
 	}
+}
+
+bool
+ControlAllocator::is_ftc_button_pressed(int button_number) const
+{
+	if (button_number <= 0 || button_number > 16) {
+		return false;
+	}
+
+	return (_manual_control_setpoint.buttons & (1u << (button_number - 1))) != 0;
 }
 
 void
@@ -793,7 +829,7 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	}
 
 	ControlAllocationPseudoInverse *pseudo_inverse_allocation =
-		dynamic_cast<ControlAllocationPseudoInverse *>(_control_allocation[matrix_index]);
+		static_cast<ControlAllocationPseudoInverse *>(_control_allocation[matrix_index]);
 
 	if (pseudo_inverse_allocation == nullptr) {
 		return;
@@ -1317,7 +1353,21 @@ int ControlAllocator::print_status()
 		break;
 	}
 
-	const char *trigger_mode_str = (_param_ca_ftc_trig_mode.get() == (int)FtcTriggerMode::PARAM) ? "param" : "aux";
+	const char *trigger_mode_str = "aux";
+
+	switch (static_cast<FtcTriggerMode>(_param_ca_ftc_trig_mode.get())) {
+	case FtcTriggerMode::PARAM:
+		trigger_mode_str = "param";
+		break;
+
+	case FtcTriggerMode::BUTTONS:
+		trigger_mode_str = "buttons";
+		break;
+
+	case FtcTriggerMode::AUX:
+	default:
+		break;
+	}
 
 	PX4_INFO("FTC: %s, trigger=%s, mode=%s, fault_time=%.3fs, motor=%d, type=%s, lambda=%.2f",
 		 _ftc_fault_trigger_active ? "active" : "inactive",

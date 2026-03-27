@@ -673,10 +673,12 @@ parameters:
                     Selects how the FTC fault trigger is activated.
                     AUX mode uses CA_FTC_TRIG_SRC and the 3-position switch mapping -1=fault degraded, 0=normal, +1=fault nominal.
                     Param mode uses CA_FTC_STATE for direct in-flight state selection from the shell or QGC.
+                    Buttons mode uses CA_FTC_BTN_DEG and CA_FTC_BTN_NOM to select fault states from MAVLink MANUAL_CONTROL button bits.
             type: enum
             values:
                 0: AUX switch
                 1: Param state
+                2: Buttons
             default: 0
 
         CA_FTC_STATE:
@@ -697,7 +699,7 @@ parameters:
                 short: FTC trigger AUX source
                 long: |
                     Selects which manual_control_setpoint auxiliary input is used as the 3-position FTC mode switch when CA_FTC_TRIG_MODE is AUX switch.
-                    Ignored in Param mode. Expected mapping is -1 for fault degraded, 0 for normal, and +1 for fault nominal.
+                    Ignored in Param and Buttons mode. Expected mapping is -1 for fault degraded, 0 for normal, and +1 for fault nominal.
             type: enum
             values:
                 0: Disabled
@@ -707,6 +709,28 @@ parameters:
                 4: AUX4
                 5: AUX5
                 6: AUX6
+            default: 0
+
+        CA_FTC_BTN_DEG:
+            description:
+                short: FTC degraded trigger button
+                long: |
+                    Selects the MAVLink MANUAL_CONTROL button number that activates the degraded FTC mode when CA_FTC_TRIG_MODE is Buttons.
+                    Button numbering starts at 1 and maps to the MANUAL_CONTROL.buttons bitmask. Set to 0 to disable.
+            type: int32
+            min: 0
+            max: 16
+            default: 0
+
+        CA_FTC_BTN_NOM:
+            description:
+                short: FTC nominal trigger button
+                long: |
+                    Selects the MAVLink MANUAL_CONTROL button number that activates the nominal FTC mode when CA_FTC_TRIG_MODE is Buttons.
+                    Button numbering starts at 1 and maps to the MANUAL_CONTROL.buttons bitmask. Set to 0 to disable.
+            type: int32
+            min: 0
+            max: 16
             default: 0
 
         CA_FTC_YAW_SCL:

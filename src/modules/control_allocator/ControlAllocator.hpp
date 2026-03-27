@@ -165,6 +165,7 @@ private:
 	void apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const;
 	float get_ftc_fault_output_limit() const;
 	float get_selected_ftc_aux_value() const;
+	bool is_ftc_button_pressed(int button_number) const;
 
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
@@ -209,6 +210,7 @@ private:
 	enum class FtcTriggerMode {
 		AUX = 0,
 		PARAM = 1,
+		BUTTONS = 2,
 	};
 
 	EffectivenessSource _effectiveness_source_id{EffectivenessSource::NONE};
@@ -290,6 +292,8 @@ private:
 		(ParamInt<px4::params::CA_FTC_TRIG_MODE>) _param_ca_ftc_trig_mode,
 		(ParamInt<px4::params::CA_FTC_STATE>) _param_ca_ftc_state,
 		(ParamInt<px4::params::CA_FTC_TRIG_SRC>) _param_ca_ftc_trig_src,
+		(ParamInt<px4::params::CA_FTC_BTN_DEG>) _param_ca_ftc_btn_deg,
+		(ParamInt<px4::params::CA_FTC_BTN_NOM>) _param_ca_ftc_btn_nom,
 		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode
 	)
 
