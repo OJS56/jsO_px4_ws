@@ -45,6 +45,7 @@
 #include <circuit_breaker/circuit_breaker.h>
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
+#include <px4_platform_common/events.h>
 
 using namespace matrix;
 using namespace time_literals;
@@ -626,17 +627,32 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 		const char *fault_type_str = (_param_ca_ftc_type.get() == 1) ? "LOE"
 			: (_param_ca_ftc_type.get() == 2) ? "Saturation" : "unknown";
 		const char *mode_str = (mode == FtcMode::FAULT_DEGRADED) ? "fault_degraded" : "fault_nominal";
+		const int fault_motor = static_cast<int>(math::constrain(_param_ca_ftc_mot.get(), int32_t{1},
+					int32_t{actuator_motors_s::NUM_CONTROLS}));
+		const double loe = (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f);
 
-			if (integer_value) {
-				PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.0f",
-					 mode_str, static_cast<int>(math::constrain(_param_ca_ftc_mot.get(), int32_t{1}, int32_t{actuator_motors_s::NUM_CONTROLS})), fault_type_str,
-					 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), source_label, source_value);
+		if (integer_value) {
+			PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.0f",
+				 mode_str, fault_motor, fault_type_str, loe, source_label, source_value);
 
-			} else {
-				PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.2f",
-					 mode_str, static_cast<int>(math::constrain(_param_ca_ftc_mot.get(), int32_t{1}, int32_t{actuator_motors_s::NUM_CONTROLS})), fault_type_str,
-					 (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f), source_label, source_value);
-			}
+		} else {
+			PX4_WARN("FTC state %s: motor=%d type=%s lambda=%.2f %s=%.2f",
+				 mode_str, fault_motor, fault_type_str, loe, source_label, source_value);
+		}
+
+		// Keep the GCS message short enough for MAVLink STATUSTEXT.
+		mavlink_log_warning(&_mavlink_log_pub, "FTC %s m%d %s lam=%.2f\t",
+				    mode == FtcMode::FAULT_DEGRADED ? "degraded" : "nominal",
+				    fault_motor, fault_type_str, loe);
+
+		if (mode == FtcMode::FAULT_DEGRADED) {
+			events::send(events::ID("control_allocator_ftc_degraded"),
+				     events::Log::Warning, "FTC degraded");
+
+		} else {
+			events::send(events::ID("control_allocator_ftc_nominal"),
+				     events::Log::Warning, "FTC nominal");
+		}
 	};
 
 	switch (trigger_mode) {
@@ -912,6 +928,8 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 			 _ftc_fault_motor_idx + 1, (double)_ftc_fault_nominal_command, (double)_ftc_fault_applied_command,
 			 (double)_ftc_fault_command_limit, (double)_ftc_residual_yaw_moment,
 			 (double)_reaction_wheel_torque_command, (double)(now / 1e6));
+		mavlink_log_warning(&_mavlink_log_pub, "FTC realloc active m%d lim=%.2f\t",
+				    _ftc_fault_motor_idx + 1, (double)_ftc_fault_command_limit);
 	}
 }
 

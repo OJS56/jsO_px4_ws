@@ -65,6 +65,7 @@
 #include <px4_platform_common/module.h>
 #include <px4_platform_common/module_params.h>
 #include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
+#include <systemlib/mavlink_log.h>
 #include <uORB/Publication.hpp>
 #include <uORB/PublicationMulti.hpp>
 #include <uORB/Subscription.hpp>
@@ -253,6 +254,7 @@ private:
 	uint16_t _motor_stop_mask{0};
 
 	perf_counter_t	_loop_perf;			/**< loop duration performance counter */
+	orb_advert_t _mavlink_log_pub{nullptr};
 
 	bool _armed{false};
 	bool _is_vtol{false};
