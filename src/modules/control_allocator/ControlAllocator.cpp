@@ -697,6 +697,12 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 			}
 		}
 
+		if (previous_mode != FtcMode::NORMAL && _ftc_mode == FtcMode::NORMAL) {
+			mavlink_log_info(&_mavlink_log_pub, "no failure\t");
+			events::send(events::ID("control_allocator_ftc_no_failure"),
+				     events::Log::Info, "no failure");
+		}
+
 		break;
 	}
 
