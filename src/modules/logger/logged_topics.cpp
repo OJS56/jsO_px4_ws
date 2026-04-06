@@ -214,11 +214,12 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("pps_capture");
 
 	// additional control allocation logging
-	add_topic("actuator_motors", 100);
-	add_topic("actuator_servos", 100);
-	add_optional_topic("control_allocator_ftc_debug", 20);
-	add_topic_multi("vehicle_thrust_setpoint", 20, 2);
-	add_topic_multi("vehicle_torque_setpoint", 20, 2);
+		add_topic("actuator_motors", 100);
+		add_topic("actuator_servos", 100);
+		add_optional_topic("control_allocator_ftc_debug", 20);
+		add_optional_topic("reaction_wheel_setpoint", 20);
+		add_topic_multi("vehicle_thrust_setpoint", 20, 2);
+		add_topic_multi("vehicle_torque_setpoint", 20, 2);
 
 	// SYS_HITL: default ground truth logging for simulation
 	int32_t sys_hitl = 0;
@@ -283,13 +284,14 @@ void LoggedTopics::add_high_rate_topics()
 	add_topic("vehicle_rates_setpoint");
 
 	add_topic("esc_status", 5);
-	add_topic("actuator_motors");
-	add_optional_topic("control_allocator_ftc_debug");
-	add_topic("actuator_outputs_debug");
-	add_topic("actuator_servos");
-	add_topic_multi("vehicle_thrust_setpoint", 0, 2);
-	add_topic_multi("vehicle_torque_setpoint", 0, 2);
-}
+		add_topic("actuator_motors");
+		add_optional_topic("control_allocator_ftc_debug");
+		add_topic("actuator_outputs_debug");
+		add_topic("actuator_servos");
+		add_optional_topic("reaction_wheel_setpoint");
+		add_topic_multi("vehicle_thrust_setpoint", 0, 2);
+		add_topic_multi("vehicle_torque_setpoint", 0, 2);
+	}
 
 void LoggedTopics::add_debug_topics()
 {
