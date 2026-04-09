@@ -85,6 +85,7 @@ if(gazebo_FOUND)
 		cloudship
 		glider
 		iris
+		iris_ftc_rw
 		iris_dual_gps
 		iris_foggy_lidar
 		iris_irlock

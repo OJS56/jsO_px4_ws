@@ -1,0 +1,139 @@
+module_name: Reaction Wheel Control
+
+parameters:
+  - group: Reaction Wheel
+    definitions:
+
+      RW_EN:
+        description:
+          short: Enable reaction wheel control module
+        type: boolean
+        default: false
+
+      RW_MOT_IDX:
+        description:
+          short: Reaction wheel actuator motor slot index
+          long: |
+            Motor slot index used both for esc_status actuator function matching and actuator_motors overlay.
+        type: int32
+        min: 5
+        max: 12
+        default: 5
+
+      RW_YAW2TAU:
+        description:
+          short: Residual yaw to wheel torque scale
+        type: float
+        unit: Nm
+        decimal: 4
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.02
+
+      RW_TAU_MAX:
+        description:
+          short: Maximum wheel torque command
+        type: float
+        unit: Nm
+        decimal: 4
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.05
+
+      RW_J:
+        description:
+          short: Reaction wheel inertia
+        type: float
+        unit: kg m^2
+        decimal: 6
+        increment: 0.0001
+        min: 0.000001
+        max: 1.0
+        default: 0.0002
+
+      RW_RPM_MAX:
+        description:
+          short: Maximum absolute wheel RPM
+        type: float
+        unit: rpm
+        decimal: 0
+        increment: 10
+        min: 10
+        max: 100000
+        default: 8000
+
+      RW_RPM_KP:
+        description:
+          short: RPM loop proportional gain
+        type: float
+        decimal: 6
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.001
+
+      RW_RPM_KI:
+        description:
+          short: RPM loop integral gain
+        type: float
+        decimal: 6
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.0001
+
+      RW_RPM_FF:
+        description:
+          short: RPM loop feedforward gain
+        type: float
+        decimal: 6
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.0
+
+      RW_LEAK_TC:
+        description:
+          short: RPM setpoint leak time constant
+        type: float
+        unit: s
+        decimal: 2
+        increment: 0.1
+        min: 0.01
+        max: 100.0
+        default: 2.0
+
+      RW_FB_TIMEOUT:
+        description:
+          short: RPM feedback timeout
+        type: float
+        unit: s
+        decimal: 3
+        increment: 0.01
+        min: 0.001
+        max: 5.0
+        default: 0.1
+
+      RW_ZERO_RPM_THR:
+        description:
+          short: Zero crossing threshold
+        type: float
+        unit: rpm
+        decimal: 0
+        increment: 1
+        min: 0
+        max: 1000
+        default: 100
+
+      RW_REV_RATE_LIM:
+        description:
+          short: Reversal slew limit
+        type: float
+        unit: 1/s
+        decimal: 2
+        increment: 0.1
+        min: 0.01
+        max: 100.0
+        default: 2.0

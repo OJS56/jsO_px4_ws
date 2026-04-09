@@ -218,6 +218,8 @@ void LoggedTopics::add_default_topics()
 		add_topic("actuator_servos", 100);
 		add_optional_topic("control_allocator_ftc_debug", 20);
 		add_optional_topic("reaction_wheel_setpoint", 20);
+		add_optional_topic("reaction_wheel_actuator_setpoint", 20);
+		add_optional_topic("reaction_wheel_status", 20);
 		add_topic_multi("vehicle_thrust_setpoint", 20, 2);
 		add_topic_multi("vehicle_torque_setpoint", 20, 2);
 

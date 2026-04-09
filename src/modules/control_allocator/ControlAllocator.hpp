@@ -76,6 +76,7 @@
 #include <uORB/topics/control_allocator_ftc_debug.h>
 #include <uORB/topics/control_allocator_status.h>
 #include <uORB/topics/parameter_update.h>
+#include <uORB/topics/reaction_wheel_actuator_setpoint.h>
 #include <uORB/topics/reaction_wheel_setpoint.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_torque_setpoint.h>
@@ -154,6 +155,7 @@ private:
 	void fill_motor_controls_from_allocation(float controls[MAX_NUM_MOTORS]) const;
 	void fill_motor_outputs_for_publish(float controls[MAX_NUM_MOTORS]) const;
 	void fill_motor_saturation_from_allocation(int8_t saturation[MAX_NUM_MOTORS]) const;
+	void overlay_reaction_wheel_control(float controls[MAX_NUM_MOTORS]);
 
 	void handle_stopped_motors(const hrt_abstime now);
 
@@ -235,6 +237,7 @@ private:
 	uORB::Publication<actuator_servos_s>	_actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_servos_trim_s>	_actuator_servos_trim_pub{ORB_ID(actuator_servos_trim)};
 	uORB::Publication<reaction_wheel_setpoint_s> _reaction_wheel_setpoint_pub{ORB_ID(reaction_wheel_setpoint)};
+	uORB::Subscription _reaction_wheel_actuator_setpoint_sub{ORB_ID(reaction_wheel_actuator_setpoint)};
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
@@ -272,6 +275,7 @@ private:
 	float _ftc_residual_yaw_moment{0.f};
 	float _reaction_wheel_torque_command{0.f};
 	bool _reaction_wheel_active{false};
+	bool _reaction_wheel_reversible_warned{false};
 	hrt_abstime _last_run{0};
 	hrt_abstime _timestamp_sample{0};
 	hrt_abstime _last_status_pub{0};
@@ -296,7 +300,8 @@ private:
 		(ParamInt<px4::params::CA_FTC_TRIG_SRC>) _param_ca_ftc_trig_src,
 		(ParamInt<px4::params::CA_FTC_BTN_DEG>) _param_ca_ftc_btn_deg,
 		(ParamInt<px4::params::CA_FTC_BTN_NOM>) _param_ca_ftc_btn_nom,
-		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode
+		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode,
+		(ParamInt<px4::params::CA_RW_MOT_IDX>) _param_ca_rw_mot_idx
 	)
 
 };

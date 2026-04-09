@@ -534,6 +534,26 @@ ControlAllocator::fill_motor_outputs_for_publish(float controls[MAX_NUM_MOTORS])
 }
 
 void
+ControlAllocator::overlay_reaction_wheel_control(float controls[MAX_NUM_MOTORS])
+{
+	const int motor_idx = math::constrain(_param_ca_rw_mot_idx.get() - 1, 0, MAX_NUM_MOTORS - 1);
+
+	reaction_wheel_actuator_setpoint_s wheel_sp{};
+
+	if (!_reaction_wheel_actuator_setpoint_sub.copy(&wheel_sp) || !wheel_sp.active) {
+		controls[motor_idx] = 0.f;
+		return;
+	}
+
+	controls[motor_idx] = math::constrain(wheel_sp.control, -1.f, 1.f);
+
+	if (((_param_r_rev.get() & (1u << motor_idx)) == 0u) && !_reaction_wheel_reversible_warned) {
+		PX4_WARN("Reaction wheel motor slot %d is not reversible in CA_R_REV", motor_idx + 1);
+		_reaction_wheel_reversible_warned = true;
+	}
+}
+
+void
 ControlAllocator::fill_motor_saturation_from_allocation(int8_t saturation[MAX_NUM_MOTORS]) const
 {
 	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
@@ -1233,6 +1253,7 @@ ControlAllocator::publish_actuator_controls()
 
 	actuator_motors.reversible_flags = _param_r_rev.get();
 	fill_motor_outputs_for_publish(actuator_motors.control);
+	overlay_reaction_wheel_control(actuator_motors.control);
 
 	_actuator_motors_pub.publish(actuator_motors);
 

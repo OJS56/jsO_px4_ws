@@ -1,0 +1,18 @@
+#!/bin/sh
+#
+# @name Gazebo-classic Iris FTC Reaction Wheel
+#
+# @type Quadrotor Wide
+#
+# @maintainer OpenAI Codex
+#
+
+. ${R}etc/init.d-posix/airframes/10020_gazebo-classic_iris_ftc
+
+param set-default PWM_MAIN_FUNC5 105
+param set-default CA_RW_MOT_IDX 5
+param set-default RW_MOT_IDX 5
+param set-default CA_R_REV 16
+param set-default RW_EN 1
+
+reaction_wheel_control start

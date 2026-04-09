@@ -759,6 +759,41 @@ parameters:
                 1: Degraded 3x3
             default: 0
 
+        CA_RW_MOT_IDX:
+            description:
+                short: Reaction wheel motor slot index
+                long: |
+                    Selects which actuator_motors slot is used to overlay the reaction wheel command.
+                    This slot must also be configured as reversible in CA_R_REV and mapped to a BDShot-capable output.
+            type: int32
+            min: 5
+            max: 12
+            default: 5
+
+        CA_RW_TEST_EN:
+            description:
+                short: Reaction wheel torque test enable
+                long: |
+                    When enabled, reaction_wheel_control interprets CA_RW_TEST_CMD as a normalized
+                    reaction wheel torque command and generates the corresponding RPM ramp internally.
+                    This is intended only for bench/SITL wheel-only tests.
+            type: boolean
+            default: 0
+
+        CA_RW_TEST_CMD:
+            description:
+                short: Reaction wheel normalized torque test command
+                long: |
+                    Normalized reaction wheel torque command when CA_RW_TEST_EN is enabled.
+                    A value of +1 commands +RW_TAU_MAX and -1 commands -RW_TAU_MAX.
+                    Valid range is [-1, 1].
+            type: float
+            decimal: 2
+            increment: 0.05
+            min: -1.0
+            max: 1.0
+            default: 0.0
+
         CA_ICE_PERIOD:
             description:
                 short: Ice shedding cycle period

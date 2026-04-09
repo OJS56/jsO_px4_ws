@@ -1,0 +1,5 @@
+menuconfig MODULES_REACTION_WHEEL_CONTROL
+	bool "reaction_wheel_control"
+	default n
+	---help---
+		Enable support for reaction_wheel_control
