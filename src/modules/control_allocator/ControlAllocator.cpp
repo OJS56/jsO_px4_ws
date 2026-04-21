@@ -141,7 +141,7 @@ void
 ControlAllocator::update_allocation_method(bool force)
 {
 	AllocationMethod configured_method = (AllocationMethod)_param_ca_method.get();
-
+   
 	if (!_actuator_effectiveness) {
 		PX4_ERR("_actuator_effectiveness null");
 		return;
@@ -361,6 +361,7 @@ ControlAllocator::Run()
 				_ftc_residual_yaw_moment = 0.f;
 				_reaction_wheel_torque_command = 0.f;
 				_reaction_wheel_active = false;
+				_reaction_wheel_latched_active = false;
 			}
 
 			ActuatorEffectiveness::FlightPhase flight_phase{ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT};
@@ -486,7 +487,8 @@ ControlAllocator::Run()
 		publish_control_allocator_ftc_debug(now, pre_ftc_motor_controls, post_ftc_motor_controls, final_motor_controls);
 	}
 
-	update_reaction_wheel_setpoint(_reaction_wheel_torque_command, _ftc_residual_yaw_moment, _reaction_wheel_active, now);
+	update_reaction_wheel_setpoint(_reaction_wheel_torque_command, _ftc_residual_yaw_moment,
+				       _reaction_wheel_latched_active, now);
 
 	// Publish actuator setpoint and allocator status
 	publish_actuator_controls();
@@ -634,6 +636,8 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 		_ftc_fault_trigger_active = false;
 		_ftc_degraded_allocation_active = false;
 		_ftc_output_fault_active = false;
+		_reaction_wheel_active = false;
+		_reaction_wheel_latched_active = false;
 		return;
 	}
 
@@ -701,6 +705,8 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 			_ftc_fault_trigger_active = false;
 			_ftc_degraded_allocation_active = false;
 			_ftc_output_fault_active = false;
+			_reaction_wheel_active = false;
+			_reaction_wheel_latched_active = false;
 			return;
 		}
 
@@ -731,6 +737,8 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 			_ftc_fault_trigger_active = false;
 			_ftc_degraded_allocation_active = false;
 			_ftc_output_fault_active = false;
+			_reaction_wheel_active = false;
+			_reaction_wheel_latched_active = false;
 			return;
 		}
 
@@ -769,6 +777,8 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 		_ftc_fault_type = 0;
 		_ftc_fault_motor_idx = -1;
 		_ftc_current_loe = 1.f;
+		_reaction_wheel_active = false;
+		_reaction_wheel_latched_active = false;
 	}
 }
 
@@ -846,7 +856,7 @@ ControlAllocator::get_motor_column_index(int motor_idx, int matrix_index, int &m
 void
 ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now)
 {
-	const bool was_reaction_wheel_active = _reaction_wheel_active;
+	const bool was_reaction_wheel_active = _reaction_wheel_latched_active;
 	_ftc_fault_nominal_command = 0.f;
 	_ftc_fault_applied_command = 0.f;
 	_ftc_fault_command_limit = 1.f;
@@ -855,18 +865,21 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	_reaction_wheel_active = false;
 
 	if (!_ftc_fault_trigger_active || _ftc_fault_motor_idx < 0 || matrix_index != 0) {
+		_reaction_wheel_latched_active = false;
 		return;
 	}
 
 	const int motor_count = _num_actuators[(int)ActuatorType::MOTORS];
 
 	if (motor_count < 4) {
+		_reaction_wheel_latched_active = false;
 		return;
 	}
 
 	int fault_column = -1;
 
 	if (!get_motor_column_index(_ftc_fault_motor_idx, matrix_index, fault_column)) {
+		_reaction_wheel_latched_active = false;
 		return;
 	}
 
@@ -874,6 +887,7 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 		static_cast<ControlAllocationPseudoInverse *>(_control_allocation[matrix_index]);
 
 	if (pseudo_inverse_allocation == nullptr) {
+		_reaction_wheel_latched_active = false;
 		return;
 	}
 
@@ -891,10 +905,6 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	_ftc_fault_nominal_command = nominal_fault_command;
 	_ftc_fault_applied_command = applied_fault_command;
 	_ftc_fault_command_limit = fault_command_limit;
-
-	if (nominal_fault_command <= fault_command_limit + FLT_EPSILON) {
-		return;
-	}
 
 	matrix::SquareMatrix<float, 3> reduced_mix;
 	matrix::Vector3f reduced_control_delta;
@@ -920,6 +930,17 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	}
 
 	if (healthy_count != 3 || fault_motor_matrix_column < 0) {
+		_reaction_wheel_latched_active = false;
+		return;
+	}
+
+	// Keep the wheel controller latched for the whole FTC fault session once the
+	// degraded allocation path is valid. A zero residual only means no additional
+	// wheel acceleration is needed for this sample, not that wheel state should reset.
+	_reaction_wheel_latched_active = true;
+	_reaction_wheel_active = true;
+
+	if (nominal_fault_command <= fault_command_limit + FLT_EPSILON) {
 		return;
 	}
 
@@ -946,8 +967,11 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 
 	const matrix::Vector<float, NUM_AXES> allocated_control = _control_allocation[matrix_index]->getAllocatedControl();
 	_ftc_residual_yaw_moment = control_sp(2) - allocated_control(2);
+	// Publish the wheel/body-reaction-sign-corrected feedforward torque request.
+	// Yaw-rate feedback is intentionally applied downstream in
+	// reaction_wheel_torque_control, not in the allocator.
 	_reaction_wheel_torque_command = -_ftc_residual_yaw_moment;
-	_reaction_wheel_active = true;
+	_reaction_wheel_active = _reaction_wheel_latched_active;
 
 	if (!was_reaction_wheel_active) {
 		PX4_WARN("FTC reallocation active: motor=%d nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f t=%.3fs",
@@ -1431,7 +1455,7 @@ int ControlAllocator::print_status()
 		 (double)_ftc_fault_command_limit,
 		 (double)_ftc_residual_yaw_moment,
 		 (double)_reaction_wheel_torque_command,
-		 _reaction_wheel_active ? "yes" : "no");
+		 _reaction_wheel_latched_active ? "yes" : "no");
 
 	// Print current allocation method
 	switch (_allocation_method_id) {

@@ -1580,7 +1580,7 @@ void EKF2::PublishLocalPosition(const hrt_abstime &timestamp)
 	const Vector3f vel_deriv{_ekf.getVelocityDerivative()};
 	_ekf.resetVelocityDerivativeAccumulation();
 	lpos.ax = vel_deriv(0);
-	lpos.ay = vel_deriv(1);
+	lpos.ay = vel_deriv(1);   
 	lpos.az = vel_deriv(2);
 
 	lpos.xy_valid = _ekf.isLocalHorizontalPositionValid();

@@ -102,7 +102,7 @@ parameters:
         decimal: 2
         increment: 0.1
         min: 0.01
-        max: 100.0
+        max: 10000.0
         default: 2.0
 
       RW_FB_TIMEOUT:

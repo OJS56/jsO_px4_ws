@@ -1,0 +1,5 @@
+menuconfig MODULES_REACTION_WHEEL_TORQUE_CONTROL
+	bool "reaction_wheel_torque_control"
+	default n
+	---help---
+		Enable support for reaction_wheel_torque_control

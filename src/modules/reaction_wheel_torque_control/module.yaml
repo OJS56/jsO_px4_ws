@@ -1,0 +1,57 @@
+module_name: Reaction Wheel Torque Control
+
+parameters:
+  - group: Reaction Wheel Torque
+    definitions:
+
+      RW_YAWRATE_K:
+        description:
+          short: Yaw-rate damping gain for torque-mode SITL
+        type: float
+        decimal: 4
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.15
+
+      RW_YAWRATE_DB:
+        description:
+          short: Yaw-rate deadband for torque-mode SITL
+        type: float
+        unit: rad/s
+        decimal: 3
+        increment: 0.01
+        min: 0.0
+        max: 10.0
+        default: 0.05
+
+      RW_FF_SCALE:
+        description:
+          short: Allocator feedforward scaling for torque-mode SITL
+        type: float
+        decimal: 3
+        increment: 0.05
+        min: 0.0
+        max: 10.0
+        default: 1.0
+
+      RW_TQ_SLEW:
+        description:
+          short: Torque command slew limit for torque-mode SITL
+        type: float
+        decimal: 3
+        increment: 0.05
+        min: 0.0
+        max: 100.0
+        default: 5.0
+
+      RW_GYR_TO:
+        description:
+          short: Gyro feedback timeout for torque-mode SITL
+        type: float
+        unit: s
+        decimal: 3
+        increment: 0.01
+        min: 0.001
+        max: 5.0
+        default: 0.1

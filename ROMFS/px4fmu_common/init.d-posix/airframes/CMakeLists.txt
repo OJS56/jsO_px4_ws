@@ -101,6 +101,7 @@ px4_add_romfs_files(
 	10019_gazebo-classic_omnicopter
 	10020_gazebo-classic_iris_ftc
 	10021_gazebo-classic_iris_ftc_rw
+	10022_gazebo-classic_iris_ftc_rw_torque
 	10030_gazebo-classic_px4vision
 
 	10040_sihsim_quadx

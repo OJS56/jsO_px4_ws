@@ -86,6 +86,7 @@ if(gazebo_FOUND)
 		glider
 		iris
 		iris_ftc_rw
+		iris_ftc_rw_torque
 		iris_dual_gps
 		iris_foggy_lidar
 		iris_irlock

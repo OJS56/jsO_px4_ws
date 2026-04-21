@@ -275,6 +275,7 @@ private:
 	float _ftc_residual_yaw_moment{0.f};
 	float _reaction_wheel_torque_command{0.f};
 	bool _reaction_wheel_active{false};
+	bool _reaction_wheel_latched_active{false};
 	bool _reaction_wheel_reversible_warned{false};
 	hrt_abstime _last_run{0};
 	hrt_abstime _timestamp_sample{0};

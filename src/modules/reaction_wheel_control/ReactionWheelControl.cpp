@@ -140,6 +140,10 @@ void ReactionWheelControl::publishOutputs(hrt_abstime now, float torque_residual
 	status.timestamp = now;
 	status.allocator_torque_residual = torque_residual;
 	status.torque_command_nm = torque_command_nm;
+	status.torque_ff_nm = torque_command_nm;
+	status.torque_fb_nm = 0.f;
+	status.torque_cmd_nm = torque_command_nm;
+	status.yaw_rate = 0.f;
 	status.rpm_setpoint = rpm_setpoint;
 	status.rpm_measured = rpm_measured;
 	status.rpm_error = rpm_error;
@@ -174,6 +178,9 @@ void ReactionWheelControl::Run()
 	vehicle_status_s vehicle_status{};
 	_vehicle_status_sub.copy(&vehicle_status);
 	const bool armed = vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
+	// wheel_setpoint.active is a fault-session latch from the allocator.
+	// A transient zero residual torque request during that session should not
+	// reset the accumulated wheel rpm state.
 	const bool wheel_active = test_mode || (has_setpoint && wheel_setpoint.active);
 
 	if (!_param_rw_en.get() || !wheel_active || !armed) {
@@ -190,12 +197,12 @@ void ReactionWheelControl::Run()
 						-_param_rw_tau_max.get(), _param_rw_tau_max.get());
 
 	const float wheel_inertia = math::max(_param_rw_j.get(), 1e-6f);
-	const float leak_tc = math::max(_param_rw_leak_tc.get(), 0.01f);
+	// const float leak_tc = math::max(_param_rw_leak_tc.get(), 0.01f);
 	const float rpm_max = math::max(_param_rw_rpm_max.get(), 1.f);
 
 	const float alpha_sp = torque_command_nm / wheel_inertia;
 	float rpm_sp_dot = alpha_sp * (60.f / (2.f * M_PI_F));
-	rpm_sp_dot -= _rpm_setpoint / leak_tc;
+	// rpm_sp_dot -= _rpm_setpoint / leak_tc;
 
 	_rpm_setpoint += rpm_sp_dot * dt;
 	_rpm_setpoint = math::constrain(_rpm_setpoint, -rpm_max, rpm_max);
