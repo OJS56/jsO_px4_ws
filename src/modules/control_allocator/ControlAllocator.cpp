@@ -141,7 +141,7 @@ void
 ControlAllocator::update_allocation_method(bool force)
 {
 	AllocationMethod configured_method = (AllocationMethod)_param_ca_method.get();
-   
+
 	if (!_actuator_effectiveness) {
 		PX4_ERR("_actuator_effectiveness null");
 		return;
@@ -883,15 +883,10 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 		return;
 	}
 
-	ControlAllocationPseudoInverse *pseudo_inverse_allocation =
-		static_cast<ControlAllocationPseudoInverse *>(_control_allocation[matrix_index]);
-
-	if (pseudo_inverse_allocation == nullptr) {
-		_reaction_wheel_latched_active = false;
-		return;
-	}
-
-	const matrix::Matrix<float, NUM_ACTUATORS, NUM_AXES> &mix = pseudo_inverse_allocation->getMixMatrix();
+	const ActuatorEffectiveness::EffectivenessMatrix &effectiveness =
+		_control_allocation[matrix_index]->getEffectivenessMatrix();
+	const matrix::Vector<float, NUM_AXES> &control_allocation_scale =
+		_control_allocation[matrix_index]->_control_allocation_scale;
 	const ActuatorVector &actuator_min = _control_allocation[matrix_index]->getActuatorMin();
 	const ActuatorVector &actuator_max = _control_allocation[matrix_index]->getActuatorMax();
 	const ActuatorVector &actuator_trim = _control_allocation[matrix_index]->getActuatorTrim();
@@ -900,14 +895,15 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 
 	const float nominal_fault_command = actuator_sp(fault_column);
 	const float fault_command_limit = actuator_max(fault_column) * _ftc_current_loe;
-	const float applied_fault_command = fminf(nominal_fault_command, fault_command_limit);
+	const float applied_fault_command = math::constrain(fminf(nominal_fault_command, fault_command_limit),
+					     actuator_min(fault_column), actuator_max(fault_column));
 
 	_ftc_fault_nominal_command = nominal_fault_command;
 	_ftc_fault_applied_command = applied_fault_command;
 	_ftc_fault_command_limit = fault_command_limit;
 
-	matrix::SquareMatrix<float, 3> reduced_mix;
-	matrix::Vector3f reduced_control_delta;
+	matrix::SquareMatrix<float, 3> reduced_effectiveness;
+	matrix::Vector3f reduced_control_target;
 	int healthy_columns[3] {};
 	int healthy_count = 0;
 	int fault_motor_matrix_column = -1;
@@ -945,16 +941,29 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	}
 
 	const int reduced_axes[3] {0, 1, 5};
+	const float fault_actuator_delta = applied_fault_command - actuator_trim(fault_motor_matrix_column);
 
 	for (int axis = 0; axis < 3; axis++) {
-		reduced_control_delta(axis) = control_sp(reduced_axes[axis]) - control_trim(reduced_axes[axis]);
+		const int axis_index = reduced_axes[axis];
+		const float axis_scale = control_allocation_scale(axis_index);
+
+		reduced_control_target(axis) = control_sp(axis_index) - control_trim(axis_index)
+					       - effectiveness(axis_index, fault_motor_matrix_column) * fault_actuator_delta * axis_scale;
 
 		for (int motor = 0; motor < 3; motor++) {
-			reduced_mix(motor, axis) = mix(healthy_columns[motor], reduced_axes[axis]);
+			reduced_effectiveness(axis, motor) = effectiveness(axis_index, healthy_columns[motor]) * axis_scale;
 		}
 	}
 
-	const matrix::Vector3f healthy_solution = reduced_mix * reduced_control_delta;
+	matrix::SquareMatrix<float, 3> reduced_effectiveness_inv;
+
+	if (!matrix::inv(reduced_effectiveness, reduced_effectiveness_inv)) {
+		_reaction_wheel_latched_active = false;
+		_reaction_wheel_active = false;
+		return;
+	}
+
+	const matrix::Vector3f healthy_solution = reduced_effectiveness_inv * reduced_control_target;
 
 	for (int col = 0; col < 3; col++) {
 		const float actuator_command = actuator_trim(healthy_columns[col]) + healthy_solution(col);
@@ -970,7 +979,7 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	// Publish the wheel/body-reaction-sign-corrected feedforward torque request.
 	// Yaw-rate feedback is intentionally applied downstream in
 	// reaction_wheel_torque_control, not in the allocator.
-	_reaction_wheel_torque_command = -_ftc_residual_yaw_moment;
+	_reaction_wheel_torque_command = _ftc_residual_yaw_moment;
 	_reaction_wheel_active = _reaction_wheel_latched_active;
 
 	if (!was_reaction_wheel_active) {

@@ -94,6 +94,55 @@ parameters:
         max: 10.0
         default: 0.0
 
+      RW_YAW_RATE_K:
+        description:
+          short: Yaw-rate damping gain
+        type: float
+        unit: Nm/(rad/s)
+        decimal: 4
+        increment: 0.001
+        min: 0.0
+        max: 10.0
+        default: 0.0
+
+      RW_YAWR_SP:
+        description:
+          short: Desired yaw rate for wheel damping
+        type: float
+        unit: rad/s
+        decimal: 3
+        increment: 0.01
+        min: -10.0
+        max: 10.0
+        default: 0.0
+
+      RW_MOM_KSAT:
+        description:
+          short: Wheel saturation momentum damping gain
+        type: float
+        unit: Nm/(rad/s)
+        decimal: 6
+        increment: 0.0001
+        min: 0.0
+        max: 10.0
+        default: 0.0
+
+      RW_MOM_EXP:
+        description:
+          short: Wheel saturation damping exponent
+        type: float
+        decimal: 2
+        increment: 0.1
+        min: 0.1
+        max: 16.0
+        default: 4.0
+
+      RW_LEAK_EN:
+        description:
+          short: Enable RPM setpoint leak
+        type: boolean
+        default: false
+
       RW_LEAK_TC:
         description:
           short: RPM setpoint leak time constant

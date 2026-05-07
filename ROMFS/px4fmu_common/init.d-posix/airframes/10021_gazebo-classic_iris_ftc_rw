@@ -14,5 +14,14 @@ param set-default CA_RW_MOT_IDX 5
 param set-default RW_MOT_IDX 5
 param set-default CA_R_REV 16
 param set-default RW_EN 1
+param set-default CA_FTC_LOE 0.62
+param set-default RW_YAW2TAU 0.12
+param set-default RW_TAU_MAX 0.50
+param set-default RW_LEAK_TC 2.0
+param set-default RW_RPM_MAX 8000
+param set-default RW_RPM_FF 0.05
+param set-default RW_RPM_KP 0.001
+param set-default RW_RPM_KI 0.00005
+param set-default RW_FB_TIMEOUT 0.30
 
 reaction_wheel_control start

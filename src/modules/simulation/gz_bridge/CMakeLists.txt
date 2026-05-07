@@ -38,9 +38,15 @@ else()
 endif()
 
 if (gz-transport_FOUND)
-	px4_add_git_submodule(TARGET git_gz PATH "${PX4_SOURCE_DIR}/Tools/simulation/gz")
+	set(PX4_GZ_SOURCE_DIR ${PX4_SOURCE_DIR}/Tools/simulation/gz)
 
-	file(GLOB gz_worlds ${PX4_SOURCE_DIR}/Tools/simulation/gz/worlds/*.sdf)
+	if(EXISTS "${PX4_GZ_SOURCE_DIR}/.git")
+		px4_add_git_submodule(TARGET git_gz PATH "${PX4_GZ_SOURCE_DIR}")
+	else()
+		add_custom_target(git_gz)
+	endif()
+
+	file(GLOB gz_worlds ${PX4_GZ_SOURCE_DIR}/worlds/*.sdf)
 	file(GLOB gz_airframes ${PX4_SOURCE_DIR}/ROMFS/px4fmu_common/init.d-posix/airframes/*_gz_*)
     if (gz-transport_VERSION VERSION_LESS "15")
         set(GZ_TRANSPORT_TARGET "gz-transport${gz-transport_VERSION_MAJOR}::core")
@@ -81,7 +87,7 @@ if (gz-transport_FOUND)
 
 	include(ExternalProject)
 	ExternalProject_Add(gz
-		SOURCE_DIR ${PX4_SOURCE_DIR}/Tools/simulation/gz
+		SOURCE_DIR ${PX4_GZ_SOURCE_DIR}
 		CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
 		BINARY_DIR ${PX4_BINARY_DIR}/build_gz
 		INSTALL_COMMAND ""

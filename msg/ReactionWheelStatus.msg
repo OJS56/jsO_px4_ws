@@ -8,6 +8,11 @@ float32 torque_ff_nm
 float32 torque_fb_nm
 float32 torque_cmd_nm
 float32 yaw_rate
+float32 omega_w_radps
+float32 sigma
+float32 k_omega_eff
+float32 torque_rate_nm
+float32 torque_momentum_nm
 float32 rpm_setpoint
 float32 rpm_measured
 float32 rpm_error

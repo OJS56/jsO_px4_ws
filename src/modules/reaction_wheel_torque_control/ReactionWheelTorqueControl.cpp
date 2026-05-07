@@ -191,10 +191,10 @@ void ReactionWheelTorqueControl::Run()
 	const float yaw_rate_deadband = math::max(_param_rw_yawrate_db.get(), 0.f);
 	const float yaw_rate = (fabsf(yaw_rate_raw) > yaw_rate_deadband) ? yaw_rate_raw : 0.f;
 
-	const float torque_ff_nm = - _param_rw_ff_scale.get() * torque_residual;
+	const float torque_ff_nm = _param_rw_ff_scale.get() * torque_residual;
 	// Positive body yaw rate requires positive wheel acceleration command so the
 	// wheel/body reaction pair generates an opposing body yaw torque.
-	const float torque_fb_nm = - _param_rw_yawrate_k.get() * yaw_rate;
+	const float torque_fb_nm = _param_rw_yawrate_k.get() * yaw_rate;
 	float torque_cmd_nm = math::constrain(torque_ff_nm + torque_fb_nm, -tau_max, tau_max);
 	torque_cmd_nm = applyTorqueSlewLimit(torque_cmd_nm, dt);
 	torque_cmd_nm = math::constrain(torque_cmd_nm, -tau_max, tau_max);

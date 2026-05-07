@@ -42,7 +42,14 @@ if(gazebo_FOUND)
 	# 		Limiting sitl_gazebo concurrent jobs to ${parallel_jobs}")
 
 	# project to build sitl_gazebo if necessary
-	px4_add_git_submodule(TARGET git_sitl_gazebo-classic PATH "${PX4_SOURCE_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic")
+	set(SITL_GAZEBO_CLASSIC_SOURCE_DIR ${PX4_SOURCE_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic)
+
+	if(EXISTS "${SITL_GAZEBO_CLASSIC_SOURCE_DIR}/.git")
+		px4_add_git_submodule(TARGET git_sitl_gazebo-classic PATH "${SITL_GAZEBO_CLASSIC_SOURCE_DIR}")
+	else()
+		add_custom_target(git_sitl_gazebo-classic)
+	endif()
+
 	include(ExternalProject)
 
 	# Set MAVLINK_DEVELOPMENT if using development dialect
@@ -52,7 +59,7 @@ if(gazebo_FOUND)
 	endif()
 
 	ExternalProject_Add(sitl_gazebo-classic
-		SOURCE_DIR ${PX4_SOURCE_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic
+		SOURCE_DIR ${SITL_GAZEBO_CLASSIC_SOURCE_DIR}
 		CMAKE_ARGS
 			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
 			-DSEND_ODOMETRY_DATA=ON

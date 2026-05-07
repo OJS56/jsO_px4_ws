@@ -126,8 +126,9 @@ float ReactionWheelControl::updateReversalLimitedCommand(float desired_control, 
 	return desired_control;
 }
 
-void ReactionWheelControl::publishOutputs(hrt_abstime now, float torque_residual, float torque_command_nm,
-		float rpm_setpoint, float rpm_measured, float rpm_error, float control_output,
+void ReactionWheelControl::publishOutputs(hrt_abstime now, float torque_residual, float torque_ff_nm,
+		float torque_rate_nm, float torque_momentum_nm, float torque_cmd_nm, float yaw_rate, float omega_w_radps,
+		float sigma, float k_omega_eff, float rpm_setpoint, float rpm_measured, float rpm_error, float control_output,
 		bool active, bool feedback_valid, bool saturated, bool sign_reversal_active)
 {
 	reaction_wheel_actuator_setpoint_s actuator_setpoint{};
@@ -139,11 +140,16 @@ void ReactionWheelControl::publishOutputs(hrt_abstime now, float torque_residual
 	reaction_wheel_status_s status{};
 	status.timestamp = now;
 	status.allocator_torque_residual = torque_residual;
-	status.torque_command_nm = torque_command_nm;
-	status.torque_ff_nm = torque_command_nm;
-	status.torque_fb_nm = 0.f;
-	status.torque_cmd_nm = torque_command_nm;
-	status.yaw_rate = 0.f;
+	status.torque_command_nm = torque_cmd_nm;
+	status.torque_ff_nm = torque_ff_nm;
+	status.torque_fb_nm = torque_rate_nm;
+	status.torque_cmd_nm = torque_cmd_nm;
+	status.yaw_rate = yaw_rate;
+	status.omega_w_radps = omega_w_radps;
+	status.sigma = sigma;
+	status.k_omega_eff = k_omega_eff;
+	status.torque_rate_nm = torque_rate_nm;
+	status.torque_momentum_nm = torque_momentum_nm;
 	status.rpm_setpoint = rpm_setpoint;
 	status.rpm_measured = rpm_measured;
 	status.rpm_error = rpm_error;
@@ -186,26 +192,14 @@ void ReactionWheelControl::Run()
 	if (!_param_rw_en.get() || !wheel_active || !armed) {
 		resetControllerState();
 		publishOutputs(now, test_mode ? test_command : (has_setpoint ? wheel_setpoint.torque : 0.f),
-			       0.f, 0.f, 0.f, 0.f, 0.f, false, false, false, false);
+			       0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,
+			       0.f, 0.f, 0.f, 0.f, false, false, false, false);
 		return;
 	}
 
 	const float torque_residual = test_mode ? test_command : wheel_setpoint.torque;
-	const float torque_command_nm = test_mode ?
-					(test_command * _param_rw_tau_max.get()) :
-					math::constrain(_param_rw_yaw2tau.get() * torque_residual,
-						-_param_rw_tau_max.get(), _param_rw_tau_max.get());
-
 	const float wheel_inertia = math::max(_param_rw_j.get(), 1e-6f);
-	// const float leak_tc = math::max(_param_rw_leak_tc.get(), 0.01f);
 	const float rpm_max = math::max(_param_rw_rpm_max.get(), 1.f);
-
-	const float alpha_sp = torque_command_nm / wheel_inertia;
-	float rpm_sp_dot = alpha_sp * (60.f / (2.f * M_PI_F));
-	// rpm_sp_dot -= _rpm_setpoint / leak_tc;
-
-	_rpm_setpoint += rpm_sp_dot * dt;
-	_rpm_setpoint = math::constrain(_rpm_setpoint, -rpm_max, rpm_max);
 
 	float rpm_measured = 0.f;
 	hrt_abstime feedback_timestamp = 0;
@@ -215,12 +209,40 @@ void ReactionWheelControl::Run()
 
 	if (!feedback_valid) {
 		resetControllerState();
-		publishOutputs(now, torque_residual, torque_command_nm, 0.f, got_feedback ? rpm_measured : 0.f, 0.f, 0.f,
+		publishOutputs(now, torque_residual, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,
+			       0.f, got_feedback ? rpm_measured : 0.f, 0.f, 0.f,
 			       true, false, false, false);
 		return;
 	}
 
 	_last_feedback_timestamp = feedback_timestamp;
+	const float omega_w = rpm_measured * (2.f * M_PI_F / 60.f);
+	const float omega_w_max = rpm_max * (2.f * M_PI_F / 60.f);
+	const float sigma = math::constrain(fabsf(omega_w) / omega_w_max, 0.f, 1.f);
+	const float sigma_n = powf(sigma, math::max(_param_rw_mom_exp.get(), 0.1f));
+	const float k_omega_eff = math::max(_param_rw_mom_ksat.get(), 0.f) * sigma_n;
+
+	vehicle_angular_velocity_s angular_velocity{};
+	const bool got_yaw_rate = _vehicle_angular_velocity_sub.copy(&angular_velocity)
+				  && PX4_ISFINITE(angular_velocity.xyz[2]);
+	const float yaw_rate = got_yaw_rate ? angular_velocity.xyz[2] : 0.f;
+
+	const float tau_max = math::max(_param_rw_tau_max.get(), 0.f);
+	const float torque_ff_nm = test_mode ? test_command * tau_max : _param_rw_yaw2tau.get() * torque_residual;
+	const float torque_rate_nm = test_mode ? 0.f : -_param_rw_yaw_rate_k.get() * (yaw_rate - _param_rw_yawr_sp.get());
+	const float torque_momentum_nm = test_mode ? 0.f : -k_omega_eff * omega_w;
+	const float torque_command_nm = math::constrain(torque_ff_nm + torque_rate_nm + torque_momentum_nm, -tau_max, tau_max);
+
+	const float alpha_sp = torque_command_nm / wheel_inertia;
+	float rpm_sp_dot = alpha_sp * (60.f / (2.f * M_PI_F));
+
+	if (_param_rw_leak_en.get() != 0) {
+		rpm_sp_dot -= _rpm_setpoint / math::max(_param_rw_leak_tc.get(), 0.01f);
+	}
+
+	_rpm_setpoint += rpm_sp_dot * dt;
+	_rpm_setpoint = math::constrain(_rpm_setpoint, -rpm_max, rpm_max);
+
 	const float rpm_error = _rpm_setpoint - rpm_measured;
 
 	const bool sign_reversal_active = (fabsf(_rpm_setpoint) > FLT_EPSILON)
@@ -249,7 +271,8 @@ void ReactionWheelControl::Run()
 
 	_last_control_output = control_output;
 
-	publishOutputs(now, torque_residual, torque_command_nm, _rpm_setpoint, rpm_measured, rpm_error, control_output,
+	publishOutputs(now, torque_residual, torque_ff_nm, torque_rate_nm, torque_momentum_nm, torque_command_nm,
+		       yaw_rate, omega_w, sigma, k_omega_eff, _rpm_setpoint, rpm_measured, rpm_error, control_output,
 		       true, true, saturated, sign_reversal_active);
 }
 
