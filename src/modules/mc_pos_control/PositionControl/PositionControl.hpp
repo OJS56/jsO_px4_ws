@@ -42,6 +42,7 @@
 #include <lib/mathlib/mathlib.h>
 #include <matrix/matrix/math.hpp>
 #include <uORB/topics/trajectory_setpoint.h>
+#include <uORB/topics/vehicle_ftc_physical_setpoint.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 
@@ -127,6 +128,11 @@ public:
 	void setHoverThrust(const float hover_thrust) { _hover_thrust = math::constrain(hover_thrust, HOVER_THRUST_MIN, HOVER_THRUST_MAX); }
 
 	/**
+	 * Scale thrust magnitude for primary-axis FTC while keeping the desired thrust direction unchanged.
+	 */
+	void setFtcPrimaryAxisThrustCompensation(bool enabled, float primary_axis_nz);
+
+	/**
 	 * Update the hover thrust without immediately affecting the output
 	 * by adjusting the integrator. This prevents propagating the dynamics
 	 * of the hover thrust signal directly to the output of the controller.
@@ -186,6 +192,13 @@ public:
 	void getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_setpoint) const;
 
 	/**
+	 * Get the physical FTC setpoint used by the single-rotor INDI allocator.
+	 * This keeps PX4's public thrust topics normalized while giving the INDI allocation
+	 * loop a body-z specific-force command reconstructed from the final thrust setpoint.
+	 */
+	void getFtcPhysicalSetpoint(vehicle_ftc_physical_setpoint_s &ftc_physical_setpoint) const;
+
+	/**
 	 * All setpoints are set to NAN (uncontrolled). Timestampt zero.
 	 */
 	static const trajectory_setpoint_s empty_trajectory_setpoint;
@@ -218,6 +231,11 @@ private:
 
 	float _hover_thrust{}; ///< Thrust [HOVER_THRUST_MIN, HOVER_THRUST_MAX] with which the vehicle hovers not accelerating down or up with level orientation
 	bool _decouple_horizontal_and_vertical_acceleration{true}; ///< Ignore vertical acceleration setpoint to remove its effect on the tilt setpoint
+	bool _ftc_primary_axis_thrust_comp_enabled{false};
+	float _ftc_primary_axis_nz{-1.f};
+	float _ftc_thrust_effectiveness{1.f};
+	float _ftc_fz_des_body{-9.80665f};
+	float _ftc_specific_force_magnitude{9.80665f};
 
 	// States
 	matrix::Vector3f _pos; /**< current position */

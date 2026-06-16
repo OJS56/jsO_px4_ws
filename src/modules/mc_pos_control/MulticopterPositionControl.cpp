@@ -416,8 +416,14 @@ void MulticopterPositionControl::Run()
 		}
 
 		_vehicle_land_detected_sub.update(&_vehicle_land_detected);
+		_control_allocator_ftc_debug_sub.update(&_control_allocator_ftc_debug);
+		const hrt_abstime now = hrt_absolute_time();
+		const bool ftc_debug_recent = _control_allocator_ftc_debug.timestamp != 0
+					      && now - _control_allocator_ftc_debug.timestamp < 200_ms;
 
-		if (_hover_thrust_estimate_sub.updated()) {
+		const bool freeze_hover_thrust_estimate = ftc_debug_recent && _control_allocator_ftc_debug.indi_control_active;
+
+		if (!freeze_hover_thrust_estimate && _hover_thrust_estimate_sub.updated()) {
 			hover_thrust_estimate_s hte;
 
 			if (_hover_thrust_estimate_sub.copy(&hte)) {
@@ -571,7 +577,12 @@ void MulticopterPositionControl::Run()
 
 			_control.setState(states);
 
-			const hrt_abstime now = hrt_absolute_time();
+			const bool ftc_primary_axis_thrust_comp_active = _param_mc_ftc_indi_en.get()
+					&& ftc_debug_recent
+					&& _control_allocator_ftc_debug.indi_control_active
+					&& _control_allocator_ftc_debug.ftc_mode == 1;
+
+			_control.setFtcPrimaryAxisThrustCompensation(ftc_primary_axis_thrust_comp_active, _param_mc_ftc_nz.get());
 
 			// Run position control
 			if (_control.update(dt)) {
@@ -607,6 +618,12 @@ void MulticopterPositionControl::Run()
 			_control.getLocalPositionSetpoint(local_pos_sp);
 			local_pos_sp.timestamp = hrt_absolute_time();
 			_local_pos_sp_pub.publish(local_pos_sp);
+
+			vehicle_ftc_physical_setpoint_s ftc_physical_setpoint{};
+			_control.getFtcPhysicalSetpoint(ftc_physical_setpoint);
+			ftc_physical_setpoint.timestamp_sample = vehicle_local_position.timestamp_sample;
+			ftc_physical_setpoint.timestamp = hrt_absolute_time();
+			_vehicle_ftc_physical_setpoint_pub.publish(ftc_physical_setpoint);
 
 			// Publish attitude setpoint output
 			vehicle_attitude_setpoint_s attitude_setpoint{};

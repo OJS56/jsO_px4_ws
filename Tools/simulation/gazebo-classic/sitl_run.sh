@@ -51,9 +51,16 @@ else
     follow_mode=""
 fi
 
-# To use gazebo_ros ROS2 plugins
+# To use gazebo_ros ROS2 plugins. A ROS 2 environment can be sourced on machines
+# that do not have gazebo_ros_pkgs installed; in that case passing these plugins
+# makes gzserver exit before PX4 can connect.
 if [[ -n "$ROS_VERSION" ]] && [ "$ROS_VERSION" == "2" ]; then
-	ros_args="-s libgazebo_ros_init.so -s libgazebo_ros_factory.so"
+	if ldconfig -p 2>/dev/null | grep -q "libgazebo_ros_init.so"; then
+		ros_args="-s libgazebo_ros_init.so -s libgazebo_ros_factory.so"
+	else
+		echo "ROS 2 Gazebo plugins not found, starting Gazebo Classic without gazebo_ros plugins"
+		ros_args=""
+	fi
 else
 	ros_args=""
 fi

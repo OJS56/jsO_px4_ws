@@ -1,39 +1,46 @@
 #!/bin/sh
 #
-# @name 3DR Iris Quadrotor SITL
+# @name Gazebo Iris FTC
 #
 # @type Quadrotor Wide
-#
-# @maintainer Julian Oes <julian@oes.ch>
 #
 
 . ${R}etc/init.d/rc.mc_defaults
 
+PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
+PX4_GZ_WORLD=${PX4_GZ_WORLD:=iris_ftc_default}
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=iris_ftc}
+
+param set-default SIM_GZ_EN 1
 
 param set-default CA_AIRFRAME 0
-
 param set-default CA_ROTOR_COUNT 4
 param set-default CA_ROTOR0_PX 0.13
-param set-default CA_ROTOR0_PY 0.2
+param set-default CA_ROTOR0_PY 0.20
 param set-default CA_ROTOR0_KM 0.05
 param set-default CA_ROTOR1_PX -0.13
-param set-default CA_ROTOR1_PY -0.2
+param set-default CA_ROTOR1_PY -0.20
 param set-default CA_ROTOR1_KM 0.05
 param set-default CA_ROTOR2_PX 0.13
-param set-default CA_ROTOR2_PY -0.2
+param set-default CA_ROTOR2_PY -0.20
 param set-default CA_ROTOR2_KM -0.05
 param set-default CA_ROTOR3_PX -0.13
-param set-default CA_ROTOR3_PY 0.2
+param set-default CA_ROTOR3_PY 0.20
 param set-default CA_ROTOR3_KM -0.05
 
-param set-default PWM_MAIN_FUNC1 101
-param set-default PWM_MAIN_FUNC2 102
-param set-default PWM_MAIN_FUNC3 103
-param set-default PWM_MAIN_FUNC4 104
+param set-default SIM_GZ_EC_FUNC1 101
+param set-default SIM_GZ_EC_FUNC2 102
+param set-default SIM_GZ_EC_FUNC3 103
+param set-default SIM_GZ_EC_FUNC4 104
+param set-default SIM_GZ_EC_MIN1 0
+param set-default SIM_GZ_EC_MIN2 0
+param set-default SIM_GZ_EC_MIN3 0
+param set-default SIM_GZ_EC_MIN4 0
+param set-default SIM_GZ_EC_MAX1 2000
+param set-default SIM_GZ_EC_MAX2 2000
+param set-default SIM_GZ_EC_MAX3 2000
+param set-default SIM_GZ_EC_MAX4 2000
 
-# Single-rotor FTC INDI experiment defaults for the stock Gazebo Classic iris.
-# Keep CA_FTC_STATE normal at boot; trigger the fault in flight with
-# `param set CA_FTC_STATE 1`.
 param set-default CA_FTC_EN 1
 param set-default CA_FTC_TYPE 1
 param set-default CA_FTC_MOT 2
@@ -44,7 +51,7 @@ param set-default CA_FTC_ALC_MODE 1
 param set-default CA_FTC_DUAL_EN 0
 param set-default CA_FTC_INDI_EN 1
 param set-default CA_FTC_KF 0.00000584
-param set-default CA_FTC_OMAX 1800.0
+param set-default CA_FTC_OMAX 2000.0
 param set-default CA_FTC_ERPMAX 6000.0
 param set-default CA_FTC_INDI_SDL 50.0
 param set-default CA_FTC_INDI_DUL 0.0
@@ -52,6 +59,10 @@ param set-default CA_FTC_INDI_K1 4.0
 param set-default CA_FTC_INDI_K2 4.0
 param set-default CA_FTC_INDI_K3 0.1
 param set-default CA_FTC_INDI_FC 5.0
+param set-default CA_FTC_INDI_ILIM 1.0
+param set-default CA_FTC_INDI_M 1.5
+param set-default CA_FTC_INDI_IX 0.029125
+param set-default CA_FTC_INDI_IY 0.029125
 param set-default MC_FTC_INDI_EN 1
 param set-default MC_FTC_NX 0.20
 param set-default MC_FTC_NY 0.20
@@ -61,15 +72,20 @@ param set-default MC_FTC_KY 3.0
 param set-default MC_ROLLRATE_MAX 360.0
 param set-default MC_PITCHRATE_MAX 360.0
 param set-default MPC_THR_HOVER 0.44
-param set-default CA_FTC_INDI_ILIM 1.0
 
-# Keep the physical INDI motor normalization aligned with the modified Gazebo
-# Classic iris motor model even if SITL params persist from previous runs.
+# Force persisted SITL params to stay aligned with the iris_ftc GZ motor model.
+param set SIM_GZ_EC_MIN1 0
+param set SIM_GZ_EC_MIN2 0
+param set SIM_GZ_EC_MIN3 0
+param set SIM_GZ_EC_MIN4 0
+param set SIM_GZ_EC_MAX1 2000
+param set SIM_GZ_EC_MAX2 2000
+param set SIM_GZ_EC_MAX3 2000
+param set SIM_GZ_EC_MAX4 2000
 param set CA_FTC_OMAX 2000.0
+param set CA_FTC_INDI_M 1.5
+param set CA_FTC_INDI_IX 0.029125
+param set CA_FTC_INDI_IY 0.029125
 param set MPC_THR_HOVER 0.44
-
-# These two are reboot-required and often persist from previous SITL params, so
-# force them for the stock iris FTC experiments.
 param set IMU_INTEG_RATE 512
 param set IMU_GYRO_RATEMAX 512
-

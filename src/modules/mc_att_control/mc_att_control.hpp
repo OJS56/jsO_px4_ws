@@ -47,9 +47,11 @@
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/autotune_attitude_control_status.h>
+#include <uORB/topics/control_allocator_ftc_debug.h>
 #include <uORB/topics/hover_thrust_estimate.h>
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_land_detected.h>
 #include <uORB/topics/vehicle_local_position.h>
@@ -97,6 +99,8 @@ private:
 	 * Generate & publish an attitude setpoint from stick inputs
 	 */
 	void generate_attitude_setpoint(const matrix::Quatf &q, float dt);
+	matrix::Vector3f updateFtcPrimaryAxisRateSetpoint(const matrix::Quatf &q, const vehicle_attitude_setpoint_s &attitude_setpoint,
+			float dt);
 
 	AttitudeControl _attitude_control; /**< class for attitude control calculations */
 	StickYaw _stick_yaw{this};
@@ -106,7 +110,9 @@ private:
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
 	uORB::Subscription _vehicle_attitude_setpoint_sub{ORB_ID(vehicle_attitude_setpoint)};
 	uORB::Subscription _autotune_attitude_control_status_sub{ORB_ID(autotune_attitude_control_status)};
+	uORB::Subscription _control_allocator_ftc_debug_sub{ORB_ID(control_allocator_ftc_debug)};
 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
+	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
@@ -119,6 +125,7 @@ private:
 
 	manual_control_setpoint_s       _manual_control_setpoint {};    /**< manual control setpoint */
 	vehicle_control_mode_s          _vehicle_control_mode {};       /**< vehicle control mode */
+	vehicle_attitude_setpoint_s     _vehicle_attitude_setpoint {};
 
 	perf_counter_t  _loop_perf;             /**< loop duration performance counter */
 
@@ -130,6 +137,13 @@ private:
 	float _yaw_setpoint_stabilized{0.f};
 	float _unaided_heading{NAN}; // initialized NAN to not distract heading lock when local position never published
 	float _man_tilt_max{0.f};			/**< maximum tilt allowed for manual flight [rad] */
+	bool _ftc_primary_axis_active{false};
+	bool _ftc_dual_axis_active{false};
+		bool _ftc_primary_axis_initialized{false};
+		float _ftc_chi{0.f};
+		matrix::Vector3f _ftc_ndes_inertial_prev{0.f, 0.f, -1.f};
+		hrt_abstime _ftc_ndes_inertial_prev_timestamp{0};
+		matrix::Vector3f _angular_rates{};
 
 	SlewRate<float> _manual_throttle_minimum{0.f}; ///< 0 when landed and ramped to MPC_MANTHR_MIN in air
 	SlewRate<float> _manual_throttle_maximum{0.f}; ///< 0 when disarmed ramped to 1 when spooled up
@@ -156,6 +170,13 @@ private:
 		(ParamFloat<px4::params::MC_PITCH_P>)       _param_mc_pitch_p,
 		(ParamFloat<px4::params::MC_YAW_P>)         _param_mc_yaw_p,
 		(ParamFloat<px4::params::MC_YAW_WEIGHT>)    _param_mc_yaw_weight,
+
+		(ParamBool<px4::params::MC_FTC_INDI_EN>)    _param_mc_ftc_indi_en,
+		(ParamFloat<px4::params::MC_FTC_NX>)        _param_mc_ftc_nx,
+		(ParamFloat<px4::params::MC_FTC_NY>)        _param_mc_ftc_ny,
+		(ParamFloat<px4::params::MC_FTC_NZ>)        _param_mc_ftc_nz,
+		(ParamFloat<px4::params::MC_FTC_KX>)        _param_mc_ftc_kx,
+		(ParamFloat<px4::params::MC_FTC_KY>)        _param_mc_ftc_ky,
 
 		(ParamFloat<px4::params::MC_ROLLRATE_MAX>)  _param_mc_rollrate_max,
 		(ParamFloat<px4::params::MC_PITCHRATE_MAX>) _param_mc_pitchrate_max,

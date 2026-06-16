@@ -99,6 +99,14 @@ ControlAllocator::init()
 		return false;
 	}
 
+	if (!_esc_status_sub.registerCallback()) {
+		PX4_WARN("esc_status callback registration failed, FTC INDI fast loop disabled");
+	}
+
+	if (!_vehicle_angular_velocity_sub.registerCallback()) {
+		PX4_WARN("angular velocity callback registration failed, FTC INDI gyro-rate loop disabled");
+	}
+
 #ifndef ENABLE_LOCKSTEP_SCHEDULER // Backup schedule would interfere with lockstep
 	ScheduleDelayed(50_ms);
 #endif
@@ -308,6 +316,8 @@ ControlAllocator::Run()
 {
 	if (should_exit()) {
 		_vehicle_torque_setpoint_sub.unregisterCallback();
+		_esc_status_sub.unregisterCallback();
+		_vehicle_angular_velocity_sub.unregisterCallback();
 		exit_and_cleanup(desc);
 		return;
 	}
@@ -348,7 +358,7 @@ ControlAllocator::Run()
 
 			if (_armed != was_armed) {
 				_ftc_fault_trigger_active = false;
-				_ftc_degraded_allocation_active = false;
+				_ftc_indi_control_active = false;
 				_ftc_output_fault_active = false;
 				_ftc_mode = FtcMode::NORMAL;
 				_ftc_fault_type = 0;
@@ -362,6 +372,11 @@ ControlAllocator::Run()
 				_reaction_wheel_torque_command = 0.f;
 				_reaction_wheel_active = false;
 				_reaction_wheel_latched_active = false;
+				_ftc_indi_filter_initialized = false;
+				_ftc_indi_latched_active = false;
+				_ftc_dual_indi_active = false;
+				_ftc_indi_force_error_int = 0.f;
+				_control_setpoint_valid = false;
 			}
 
 			ActuatorEffectiveness::FlightPhase flight_phase{ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT};
@@ -402,16 +417,109 @@ ControlAllocator::Run()
 	const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
 
 	update_ftc_state(now);
+	update_ftc_motor_speed_feedback(now);
+
+	vehicle_angular_velocity_s angular_velocity;
+
+	if (_vehicle_angular_velocity_sub.update(&angular_velocity)) {
+		_angular_rates = matrix::Vector3f{angular_velocity.xyz};
+		_angular_accel = matrix::Vector3f{angular_velocity.xyz_derivative};
+	}
+
+	vehicle_acceleration_s vehicle_acceleration;
+
+	if (_vehicle_acceleration_sub.update(&vehicle_acceleration)) {
+		_vehicle_acceleration = matrix::Vector3f{vehicle_acceleration.xyz};
+	}
+
+	vehicle_attitude_s vehicle_attitude;
+
+	if (_vehicle_attitude_sub.update(&vehicle_attitude)) {
+		_vehicle_attitude_q = matrix::Quatf{vehicle_attitude.q};
+		_vehicle_attitude_valid = _vehicle_attitude_q.isAllFinite();
+	}
+
+	vehicle_attitude_setpoint_s vehicle_attitude_setpoint;
+
+	if (_vehicle_attitude_setpoint_sub.update(&vehicle_attitude_setpoint)) {
+		_vehicle_attitude_setpoint_q = matrix::Quatf{vehicle_attitude_setpoint.q_d};
+		_vehicle_attitude_setpoint_valid = _vehicle_attitude_setpoint_q.isAllFinite();
+	}
+
+	vehicle_local_position_s vehicle_local_position;
+
+	if (_vehicle_local_position_sub.update(&vehicle_local_position)) {
+		_local_position = matrix::Vector3f{vehicle_local_position.x, vehicle_local_position.y, vehicle_local_position.z};
+		_local_velocity = matrix::Vector3f{vehicle_local_position.vx, vehicle_local_position.vy, vehicle_local_position.vz};
+		_local_acceleration = matrix::Vector3f{vehicle_local_position.ax, vehicle_local_position.ay, vehicle_local_position.az};
+		_local_position_valid = PX4_ISFINITE(vehicle_local_position.z) && PX4_ISFINITE(vehicle_local_position.vz);
+	}
+
+	vehicle_local_position_setpoint_s vehicle_local_position_setpoint;
+
+		if (_vehicle_local_position_setpoint_sub.update(&vehicle_local_position_setpoint)) {
+			_local_position_sp = matrix::Vector3f{vehicle_local_position_setpoint.x, vehicle_local_position_setpoint.y,
+							      vehicle_local_position_setpoint.z};
+			_local_velocity_sp = matrix::Vector3f{vehicle_local_position_setpoint.vx, vehicle_local_position_setpoint.vy,
+							      vehicle_local_position_setpoint.vz};
+			_local_acceleration_sp = matrix::Vector3f{vehicle_local_position_setpoint.acceleration};
+			_local_position_sp_valid = PX4_ISFINITE(vehicle_local_position_setpoint.z);
+		}
+
+		vehicle_ftc_physical_setpoint_s vehicle_ftc_physical_setpoint;
+
+		if (_vehicle_ftc_physical_setpoint_sub.update(&vehicle_ftc_physical_setpoint)) {
+			_ftc_physical_fz_des_body = vehicle_ftc_physical_setpoint.fz_des_body;
+			_ftc_physical_setpoint_timestamp = vehicle_ftc_physical_setpoint.timestamp;
+		}
+
+		vehicle_rates_setpoint_s vehicle_rates_setpoint_for_indi;
+
+	const bool rates_sp_updated = _vehicle_rates_setpoint_sub.update(&vehicle_rates_setpoint_for_indi);
+
+	if (rates_sp_updated) {
+		const hrt_abstime rates_sp_timestamp = vehicle_rates_setpoint_for_indi.timestamp;
+		const matrix::Vector3f rates_sp{
+			vehicle_rates_setpoint_for_indi.roll,
+			vehicle_rates_setpoint_for_indi.pitch,
+			PX4_ISFINITE(vehicle_rates_setpoint_for_indi.yaw) ? vehicle_rates_setpoint_for_indi.yaw : _angular_rates(2)
+		};
+
+		if (_last_rates_sp_timestamp != 0 && rates_sp_timestamp > _last_rates_sp_timestamp) {
+			const float rates_sp_dt = math::constrain((rates_sp_timestamp - _last_rates_sp_timestamp) * 1e-6f, 0.0002f, 0.02f);
+			_rates_sp_dot = (rates_sp - _rates_sp) / rates_sp_dt;
+
+		} else {
+			_rates_sp_dot.zero();
+		}
+
+		_rates_sp = rates_sp;
+		_last_rates_sp_timestamp = rates_sp_timestamp;
+	} else {
+		_rates_sp_dot.zero();
+	}
+
+	if (!_ftc_indi_control_active || !_param_ca_ftc_indi_en.get()) {
+		_ftc_indi_filter_initialized = false;
+		_ftc_indi_latched_active = false;
+		_ftc_dual_indi_active = false;
+		_ftc_dual_zdot_prev = _local_velocity(2);
+		_ftc_dual_y2_dot_f = 0.f;
+		_ftc_dual_y2_dot_prev = 0.f;
+		_ftc_indi_force_error_int = 0.f;
+	}
 
 	bool do_update = false;
 	vehicle_torque_setpoint_s vehicle_torque_setpoint;
 	vehicle_thrust_setpoint_s vehicle_thrust_setpoint;
+	const bool ftc_fast_update = _ftc_indi_control_active && _param_ca_ftc_indi_en.get() && _control_setpoint_valid;
 
 	// Run allocator on torque changes
 	if (_vehicle_torque_setpoint_sub.update(&vehicle_torque_setpoint)) {
 		_torque_sp = matrix::Vector3f(vehicle_torque_setpoint.xyz);
 
 		do_update = true;
+		_control_setpoint_valid = true;
 		_timestamp_sample = vehicle_torque_setpoint.timestamp_sample;
 
 	}
@@ -420,7 +528,14 @@ ControlAllocator::Run()
 		_thrust_sp = matrix::Vector3f(vehicle_thrust_setpoint.xyz);
 	}
 
-	if (do_update) {
+	do_update = do_update || ftc_fast_update;
+
+	if (!do_update) {
+		perf_end(_loop_perf);
+		return;
+	}
+
+	{
 		_last_run = now;
 		float pre_ftc_motor_controls[MAX_NUM_MOTORS] {};
 		float post_ftc_motor_controls[MAX_NUM_MOTORS] {};
@@ -465,8 +580,8 @@ ControlAllocator::Run()
 
 			if (i == 0) {
 				fill_motor_controls_from_allocation(pre_ftc_motor_controls);
-				if (_ftc_degraded_allocation_active) {
-					apply_active_ftc_allocation(i, c[i], now);
+				if (_ftc_indi_control_active) {
+					apply_active_ftc_allocation(i, c[i], now, dt);
 				}
 				// The motors are always in allocation 0
 				handle_stopped_motors(now);
@@ -593,9 +708,14 @@ ControlAllocator::publish_control_allocator_ftc_debug(const hrt_abstime now, con
 	debug.timestamp_sample = _timestamp_sample;
 	debug.ftc_active = _ftc_fault_trigger_active;
 	debug.fault_trigger_active = _ftc_fault_trigger_active;
-	debug.degraded_allocation_active = _ftc_degraded_allocation_active;
+	debug.indi_control_active = _ftc_indi_control_active;
+	debug.degraded_allocation_active = false;
 	debug.output_fault_active = _ftc_output_fault_active;
 	debug.fault_motor_index = _ftc_fault_motor_idx >= 0 ? _ftc_fault_motor_idx + 1 : 0;
+	const bool dual_mode_selected = _ftc_indi_control_active && _param_ca_ftc_dual_en.get();
+	debug.ftc_mode = dual_mode_selected ? 2 : (_ftc_indi_control_active ? 1 : (_ftc_mode == FtcMode::FAULT_NOMINAL ? 3 : 0));
+	debug.fault_motor_mask = get_ftc_fault_motor_mask();
+	debug.remaining_motor_mask = get_ftc_remaining_motor_mask();
 	debug.handled_motor_failure_mask = _handled_motor_failure_bitmask;
 	debug.motor_stop_mask = _motor_stop_mask;
 	debug.loe = _ftc_current_loe;
@@ -603,6 +723,51 @@ ControlAllocator::publish_control_allocator_ftc_debug(const hrt_abstime now, con
 	debug.applied_fault_command = _ftc_fault_applied_command;
 	debug.fault_command_limit = _ftc_fault_command_limit;
 	debug.residual_yaw_moment = _ftc_residual_yaw_moment;
+	const float dual_sl = (_param_ca_ftc_pair.get() == 0) ? -1.f : 1.f;
+	debug.chi = dual_mode_selected ? dual_sl * math::radians(math::constrain(_param_ca_ftc_chi.get(), 1.f, 179.f)) :
+		    _ftc_dual_debug_chi;
+	debug.sl = dual_mode_selected ? dual_sl : _ftc_dual_debug_sl;
+	debug.sn = _ftc_dual_debug_sn;
+	debug.indi_success = _ftc_indi_success;
+	debug.indi_fail_reason = _ftc_indi_fail_reason;
+	debug.indi_fault_column = _ftc_indi_fault_column;
+	debug.indi_healthy_count = _ftc_indi_healthy_count;
+	debug.indi_matrix_invertible = _ftc_indi_matrix_invertible;
+	debug.indi_collective_thrust = _ftc_indi_collective_thrust;
+	debug.indi_effectiveness_det = _ftc_indi_effectiveness_det;
+	debug.indi_cond_proxy = _ftc_indi_cond_proxy;
+	debug.indi_scaled_det = _ftc_indi_scaled_det;
+	debug.indi_fz_des = _ftc_indi_fz_des;
+	debug.indi_fz_error_int = _ftc_indi_force_error_int;
+
+	for (int i = 0; i < 4; ++i) {
+		debug.indi_eff_mx[i] = _ftc_indi_eff_mx[i];
+		debug.indi_eff_my[i] = _ftc_indi_eff_my[i];
+		debug.indi_eff_fz[i] = _ftc_indi_eff_fz[i];
+		debug.indi_ratio_mx_abs_fz[i] = _ftc_indi_ratio_mx_abs_fz[i];
+		debug.indi_ratio_my_abs_fz[i] = _ftc_indi_ratio_my_abs_fz[i];
+		debug.indi_omega2_f[i] = _ftc_indi_u_f[i];
+		debug.indi_omega2_cmd[i] = _ftc_indi_omega2_cmd[i];
+	}
+
+	for (int i = 0; i < 9; ++i) {
+		debug.indi_g_raw[i] = _ftc_indi_g_raw[i];
+		debug.indi_g_scaled[i] = _ftc_indi_g_scaled[i];
+	}
+
+	for (int i = 0; i < 3; ++i) {
+		debug.indi_row_scale[i] = _ftc_indi_row_scale[i];
+		debug.indi_nu_in[i] = _ftc_indi_nu_in(i);
+		debug.indi_y_dot_f[i] = _ftc_indi_y_dot_f(i);
+		debug.indi_error[i] = _ftc_indi_error(i);
+		debug.indi_delta_omega2[i] = _ftc_indi_delta_omega2(i);
+	}
+
+	for (int i = 0; i < 2; ++i) {
+		debug.y[i] = _ftc_dual_debug_y(i);
+		debug.nu[i] = _ftc_dual_debug_nu(i);
+		debug.indi_u[i] = _ftc_dual_debug_u(i);
+	}
 
 	for (int axis = 0; axis < 3; ++axis) {
 		debug.torque_setpoint[axis] = _torque_sp(axis);
@@ -634,7 +799,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 
 	if (!_armed || _param_ca_ftc_en.get() == 0 || _param_ca_ftc_type.get() == 0) {
 		_ftc_fault_trigger_active = false;
-		_ftc_degraded_allocation_active = false;
+		_ftc_indi_control_active = false;
 		_ftc_output_fault_active = false;
 		_reaction_wheel_active = false;
 		_reaction_wheel_latched_active = false;
@@ -650,7 +815,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 		_ftc_fault_timestamp = now;
 		const char *fault_type_str = (_param_ca_ftc_type.get() == 1) ? "LOE"
 			: (_param_ca_ftc_type.get() == 2) ? "Saturation" : "unknown";
-		const char *mode_str = (mode == FtcMode::FAULT_DEGRADED) ? "fault_degraded" : "fault_nominal";
+		const char *mode_str = (mode == FtcMode::FAULT_INDI) ? "fault_indi" : "fault_nominal";
 		const int fault_motor = static_cast<int>(math::constrain(_param_ca_ftc_mot.get(), int32_t{1},
 					int32_t{actuator_motors_s::NUM_CONTROLS}));
 		const double loe = (double)math::constrain(_param_ca_ftc_loe.get(), 0.f, 1.f);
@@ -666,12 +831,12 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 
 		// Keep the GCS message short enough for MAVLink STATUSTEXT.
 		mavlink_log_warning(&_mavlink_log_pub, "FTC %s m%d %s lam=%.2f\t",
-				    mode == FtcMode::FAULT_DEGRADED ? "degraded" : "nominal",
+				    mode == FtcMode::FAULT_INDI ? "INDI" : "nominal",
 				    fault_motor, fault_type_str, loe);
 
-		if (mode == FtcMode::FAULT_DEGRADED) {
-			events::send(events::ID("control_allocator_ftc_degraded"),
-				     events::Log::Warning, "FTC degraded");
+		if (mode == FtcMode::FAULT_INDI) {
+			events::send(events::ID("control_allocator_ftc_indi"),
+				     events::Log::Warning, "FTC INDI");
 
 		} else {
 			events::send(events::ID("control_allocator_ftc_nominal"),
@@ -683,7 +848,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 	case FtcTriggerMode::PARAM: {
 		switch (_param_ca_ftc_state.get()) {
 		case 1:
-			_ftc_mode = FtcMode::FAULT_DEGRADED;
+			_ftc_mode = FtcMode::FAULT_INDI;
 			report_ftc_transition(_ftc_mode, "param_state", 1., true);
 			break;
 
@@ -703,7 +868,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 	case FtcTriggerMode::AUX: {
 		if (!_manual_control_setpoint.valid || _param_ca_ftc_trig_src.get() <= 0) {
 			_ftc_fault_trigger_active = false;
-			_ftc_degraded_allocation_active = false;
+			_ftc_indi_control_active = false;
 			_ftc_output_fault_active = false;
 			_reaction_wheel_active = false;
 			_reaction_wheel_latched_active = false;
@@ -714,7 +879,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 
 		if (PX4_ISFINITE(aux_value)) {
 			if (aux_value < -0.5f) {
-				_ftc_mode = FtcMode::FAULT_DEGRADED;
+				_ftc_mode = FtcMode::FAULT_INDI;
 				report_ftc_transition(_ftc_mode, "aux", (double)aux_value, false);
 
 			} else if (aux_value > 0.5f) {
@@ -735,7 +900,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 	case FtcTriggerMode::BUTTONS: {
 		if (!_manual_control_setpoint.valid) {
 			_ftc_fault_trigger_active = false;
-			_ftc_degraded_allocation_active = false;
+			_ftc_indi_control_active = false;
 			_ftc_output_fault_active = false;
 			_reaction_wheel_active = false;
 			_reaction_wheel_latched_active = false;
@@ -747,7 +912,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 
 		if (degraded_pressed != nominal_pressed) {
 			if (degraded_pressed) {
-				_ftc_mode = FtcMode::FAULT_DEGRADED;
+				_ftc_mode = FtcMode::FAULT_INDI;
 				report_ftc_transition(_ftc_mode, "buttons", (double)_param_ca_ftc_btn_deg.get(), true);
 
 			} else {
@@ -764,7 +929,7 @@ ControlAllocator::update_ftc_state(hrt_abstime now)
 	}
 
 	_ftc_fault_trigger_active = _ftc_mode != FtcMode::NORMAL;
-	_ftc_degraded_allocation_active = _ftc_mode == FtcMode::FAULT_DEGRADED;
+	_ftc_indi_control_active = _ftc_mode == FtcMode::FAULT_INDI;
 	_ftc_output_fault_active = _ftc_fault_trigger_active;
 
 	if (_ftc_fault_trigger_active) {
@@ -830,6 +995,39 @@ ControlAllocator::update_reaction_wheel_setpoint(float torque_command, float res
 	_reaction_wheel_setpoint_pub.publish(reaction_wheel_setpoint);
 }
 
+void
+ControlAllocator::update_ftc_motor_speed_feedback(hrt_abstime now)
+{
+	esc_status_s esc_status{};
+
+	if (!_esc_status_sub.update(&esc_status)) {
+		return;
+	}
+
+	const float omega_max = math::max(_param_ca_ftc_omax.get(), 1.f);
+	const float esc_rpm_max = math::max(_param_ca_ftc_erpmax.get(), 1.f);
+	const uint8_t esc_count = math::min(esc_status.esc_count, esc_status_s::CONNECTED_ESC_MAX);
+
+	for (uint8_t esc_idx = 0; esc_idx < esc_count; esc_idx++) {
+		const esc_report_s &esc = esc_status.esc[esc_idx];
+		int motor_idx = esc_idx;
+
+		if (math::isInRange(esc.actuator_function, esc_report_s::ACTUATOR_FUNCTION_MOTOR1,
+				     esc_report_s::ACTUATOR_FUNCTION_MOTOR12)) {
+			motor_idx = esc.actuator_function - esc_report_s::ACTUATOR_FUNCTION_MOTOR1;
+		}
+
+		if (motor_idx < 0 || motor_idx >= NUM_ACTUATORS) {
+			continue;
+		}
+
+		const float speed_fraction = math::constrain(fabsf(static_cast<float>(esc.esc_rpm)) / esc_rpm_max, 0.f, 1.f);
+		const float omega = speed_fraction * omega_max;
+		_ftc_motor_omega2_feedback[motor_idx] = omega * omega;
+		_ftc_motor_feedback_timestamp[motor_idx] = esc.timestamp != 0 ? esc.timestamp : now;
+	}
+}
+
 bool
 ControlAllocator::get_motor_column_index(int motor_idx, int matrix_index, int &matrix_column) const
 {
@@ -853,45 +1051,95 @@ ControlAllocator::get_motor_column_index(int motor_idx, int matrix_index, int &m
 	return false;
 }
 
-void
-ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now)
+bool
+ControlAllocator::apply_active_ftc_indi_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp,
+		hrt_abstime now, float dt)
 {
-	const bool was_reaction_wheel_active = _reaction_wheel_latched_active;
 	_ftc_fault_nominal_command = 0.f;
 	_ftc_fault_applied_command = 0.f;
 	_ftc_fault_command_limit = 1.f;
 	_ftc_residual_yaw_moment = 0.f;
 	_reaction_wheel_torque_command = 0.f;
 	_reaction_wheel_active = false;
+	_reaction_wheel_latched_active = false;
+	_ftc_indi_success = false;
+	_ftc_indi_fail_reason = control_allocator_ftc_debug_s::INDI_FAIL_NONE;
+	_ftc_indi_fault_column = -1;
+	_ftc_indi_healthy_count = 0;
+	_ftc_indi_matrix_invertible = false;
+	_ftc_indi_collective_thrust = 0.f;
+	_ftc_indi_effectiveness_det = 0.f;
+	_ftc_indi_cond_proxy = 0.f;
+	_ftc_indi_scaled_det = 0.f;
+	_ftc_indi_nu_in.zero();
+	_ftc_indi_error.zero();
+	_ftc_indi_fz_des = 0.f;
+	_ftc_indi_delta_omega2.zero();
+
+	for (int i = 0; i < 4; ++i) {
+		_ftc_indi_eff_mx[i] = 0.f;
+		_ftc_indi_eff_my[i] = 0.f;
+		_ftc_indi_eff_fz[i] = 0.f;
+		_ftc_indi_ratio_mx_abs_fz[i] = 0.f;
+		_ftc_indi_ratio_my_abs_fz[i] = 0.f;
+		_ftc_indi_omega2_cmd[i] = 0.f;
+	}
+
+	for (int i = 0; i < 9; ++i) {
+		_ftc_indi_g_raw[i] = 0.f;
+		_ftc_indi_g_scaled[i] = 0.f;
+	}
+
+	for (int i = 0; i < 3; ++i) {
+		_ftc_indi_row_scale[i] = 0.f;
+	}
+
+	const auto fail_single_indi = [&](uint8_t reason) {
+		_ftc_indi_fail_reason = reason;
+		_ftc_indi_success = false;
+		return false;
+	};
 
 	if (!_ftc_fault_trigger_active || _ftc_fault_motor_idx < 0 || matrix_index != 0) {
-		_reaction_wheel_latched_active = false;
-		return;
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_NOT_TRIGGERED);
 	}
 
 	const int motor_count = _num_actuators[(int)ActuatorType::MOTORS];
 
 	if (motor_count < 4) {
-		_reaction_wheel_latched_active = false;
-		return;
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_MOTOR_COUNT);
 	}
 
 	int fault_column = -1;
 
 	if (!get_motor_column_index(_ftc_fault_motor_idx, matrix_index, fault_column)) {
-		_reaction_wheel_latched_active = false;
-		return;
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_FAULT_COLUMN);
 	}
+
+	_ftc_indi_fault_column = fault_column;
 
 	const ActuatorEffectiveness::EffectivenessMatrix &effectiveness =
 		_control_allocation[matrix_index]->getEffectivenessMatrix();
-	const matrix::Vector<float, NUM_AXES> &control_allocation_scale =
-		_control_allocation[matrix_index]->_control_allocation_scale;
 	const ActuatorVector &actuator_min = _control_allocation[matrix_index]->getActuatorMin();
 	const ActuatorVector &actuator_max = _control_allocation[matrix_index]->getActuatorMax();
-	const ActuatorVector &actuator_trim = _control_allocation[matrix_index]->getActuatorTrim();
-	const matrix::Vector<float, NUM_AXES> &control_trim = _control_allocation[matrix_index]->getControlTrim();
 	ActuatorVector &actuator_sp = _control_allocation[matrix_index]->_actuator_sp;
+
+	for (int motor_idx = 0; motor_idx < motor_count && motor_idx < 4; motor_idx++) {
+		int motor_matrix_column = -1;
+
+		if (get_motor_column_index(motor_idx, matrix_index, motor_matrix_column)) {
+			const float thrust_z_effectiveness = effectiveness(5, motor_matrix_column);
+			const float thrust_effectiveness_abs = fabsf(thrust_z_effectiveness);
+			_ftc_indi_eff_mx[motor_idx] = effectiveness(0, motor_matrix_column);
+			_ftc_indi_eff_my[motor_idx] = effectiveness(1, motor_matrix_column);
+			_ftc_indi_eff_fz[motor_idx] = thrust_z_effectiveness;
+
+			if (thrust_effectiveness_abs > FLT_EPSILON) {
+				_ftc_indi_ratio_mx_abs_fz[motor_idx] = effectiveness(0, motor_matrix_column) / thrust_effectiveness_abs;
+				_ftc_indi_ratio_my_abs_fz[motor_idx] = effectiveness(1, motor_matrix_column) / thrust_effectiveness_abs;
+			}
+		}
+	}
 
 	const float nominal_fault_command = actuator_sp(fault_column);
 	const float fault_command_limit = actuator_max(fault_column) * _ftc_current_loe;
@@ -902,11 +1150,8 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 	_ftc_fault_applied_command = applied_fault_command;
 	_ftc_fault_command_limit = fault_command_limit;
 
-	matrix::SquareMatrix<float, 3> reduced_effectiveness;
-	matrix::Vector3f reduced_control_target;
 	int healthy_columns[3] {};
 	int healthy_count = 0;
-	int fault_motor_matrix_column = -1;
 
 	for (int motor_idx = 0; motor_idx < motor_count && motor_idx < actuator_motors_s::NUM_CONTROLS; motor_idx++) {
 		int motor_matrix_column = -1;
@@ -916,7 +1161,6 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 		}
 
 		if (motor_idx == _ftc_fault_motor_idx) {
-			fault_motor_matrix_column = motor_matrix_column;
 			continue;
 		}
 
@@ -925,76 +1169,687 @@ ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Ve
 		}
 	}
 
-	if (healthy_count != 3 || fault_motor_matrix_column < 0) {
-		_reaction_wheel_latched_active = false;
-		return;
+	if (healthy_count != 3) {
+		_ftc_indi_healthy_count = healthy_count;
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_HEALTHY_COUNT);
 	}
 
-	// Keep the wheel controller latched for the whole FTC fault session once the
-	// degraded allocation path is valid. A zero residual only means no additional
-	// wheel acceleration is needed for this sample, not that wheel state should reset.
-	_reaction_wheel_latched_active = true;
-	_reaction_wheel_active = true;
+	_ftc_indi_healthy_count = healthy_count;
 
-	if (nominal_fault_command <= fault_command_limit + FLT_EPSILON) {
-		return;
-	}
+	float thrust_effectiveness_sum_abs = 0.f;
 
-	const int reduced_axes[3] {0, 1, 5};
-	const float fault_actuator_delta = applied_fault_command - actuator_trim(fault_motor_matrix_column);
+	for (int motor_idx = 0; motor_idx < motor_count && motor_idx < actuator_motors_s::NUM_CONTROLS; motor_idx++) {
+		int motor_matrix_column = -1;
 
-	for (int axis = 0; axis < 3; axis++) {
-		const int axis_index = reduced_axes[axis];
-		const float axis_scale = control_allocation_scale(axis_index);
-
-		reduced_control_target(axis) = control_sp(axis_index) - control_trim(axis_index)
-					       - effectiveness(axis_index, fault_motor_matrix_column) * fault_actuator_delta * axis_scale;
-
-		for (int motor = 0; motor < 3; motor++) {
-			reduced_effectiveness(axis, motor) = effectiveness(axis_index, healthy_columns[motor]) * axis_scale;
+		if (get_motor_column_index(motor_idx, matrix_index, motor_matrix_column)) {
+			thrust_effectiveness_sum_abs += fabsf(effectiveness(5, motor_matrix_column));
 		}
 	}
 
-	matrix::SquareMatrix<float, 3> reduced_effectiveness_inv;
+	if (thrust_effectiveness_sum_abs < FLT_EPSILON) {
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_THRUST_EFFECTIVENESS);
+	}
 
-	if (!matrix::inv(reduced_effectiveness, reduced_effectiveness_inv)) {
-		_reaction_wheel_latched_active = false;
+	const float hover_thrust = math::constrain(_param_mpc_thr_hover.get(), 0.05f, 0.9f);
+	const float thrust_control_to_specific_force = 9.80665f / hover_thrust;
+	const float rotor_force_coefficient = _param_ca_ftc_kf.get();
+	const float omega_max = math::max(_param_ca_ftc_omax.get(), 1.f);
+	const float max_omega2 = omega_max * omega_max;
+	const float ixx = math::max(_param_ca_ftc_indi_ix.get(), 0.001f);
+	const float iyy = math::max(_param_ca_ftc_indi_iy.get(), 0.001f);
+	const float mass = math::max(_param_ca_ftc_indi_m.get(), 0.1f);
+	const float collective_thrust_sp = math::max(-control_sp(5), 0.f);
+	_ftc_indi_collective_thrust = collective_thrust_sp;
+
+	if (rotor_force_coefficient <= FLT_EPSILON) {
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_ROTOR_COEFFICIENT);
+	}
+
+	if (collective_thrust_sp < 0.10f) {
+		actuator_sp(fault_column) = applied_fault_command;
+		_ftc_indi_filter_initialized = false;
+		_ftc_indi_latched_active = false;
+		_ftc_indi_force_error_int = 0.f;
+		_ftc_indi_fail_reason = control_allocator_ftc_debug_s::INDI_FAIL_LOW_THRUST;
+		return true;
+	}
+
+	const auto indi_effectiveness_column = [&](int motor_matrix_column) {
+		Vector3f column{};
+		const float thrust_z_effectiveness = effectiveness(5, motor_matrix_column);
+		const float thrust_effectiveness_abs = fabsf(thrust_z_effectiveness);
+
+		if (thrust_effectiveness_abs > FLT_EPSILON) {
+			column(0) = effectiveness(0, motor_matrix_column) / thrust_effectiveness_abs * rotor_force_coefficient / ixx;
+			column(1) = effectiveness(1, motor_matrix_column) / thrust_effectiveness_abs * rotor_force_coefficient / iyy;
+			column(2) = (thrust_z_effectiveness > 0.f ? 1.f : -1.f) * rotor_force_coefficient / mass;
+		}
+
+		return column;
+	};
+
+	const bool was_indi_active = _ftc_indi_latched_active;
+	_ftc_indi_latched_active = true;
+
+	Vector3f y_dot_raw{_angular_accel(0), _angular_accel(1), _vehicle_acceleration(2)};
+
+	if (!y_dot_raw.isAllFinite()) {
+		y_dot_raw = Vector3f{0.f, 0.f, 0.f};
+	}
+
+	const float cutoff = math::max(_param_ca_ftc_indi_fc.get(), 1.f);
+	const float rc = 1.f / (2.f * M_PI_F * cutoff);
+	const float alpha = math::constrain(dt / (dt + rc), 0.f, 1.f);
+	const auto motor_omega2_feedback = [&](int motor_column, float actuator_command) {
+		const bool feedback_recent = _ftc_motor_feedback_timestamp[motor_column] != 0
+					     && now - _ftc_motor_feedback_timestamp[motor_column] < 100_ms;
+
+		if (feedback_recent && PX4_ISFINITE(_ftc_motor_omega2_feedback[motor_column])) {
+			return math::constrain(_ftc_motor_omega2_feedback[motor_column], 0.f, max_omega2);
+		}
+
+		return math::sq(math::max(actuator_command, 0.f) * omega_max);
+	};
+
+	if (!_ftc_indi_filter_initialized) {
+		_ftc_indi_y_dot_f = y_dot_raw;
+
+		for (int i = 0; i < NUM_ACTUATORS; i++) {
+			const float command = (i == fault_column) ? applied_fault_command : (PX4_ISFINITE(actuator_sp(i)) ? actuator_sp(i) : 0.f);
+			const float omega2_command = motor_omega2_feedback(i, command);
+			_ftc_indi_u_f[i] = omega2_command;
+			_ftc_indi_input_raw[i] = omega2_command;
+		}
+
+		_ftc_indi_force_error_int = 0.f;
+		_ftc_indi_filter_initialized = true;
+
+	} else {
+		_ftc_indi_y_dot_f += (y_dot_raw - _ftc_indi_y_dot_f) * alpha;
+
+		for (int i = 0; i < NUM_ACTUATORS; i++) {
+			_ftc_indi_u_f[i] += (_ftc_indi_input_raw[i] - _ftc_indi_u_f[i]) * alpha;
+		}
+	}
+
+		// Prefer the physical body-z specific-force command computed by the position controller.
+		// PX4's public thrust topics stay normalized; this side channel keeps the INDI allocator in
+		// the paper's physical output space [p_dot, q_dot, f_z] without relying on hover-thrust scaling.
+		const bool physical_fz_des_recent = _ftc_physical_setpoint_timestamp != 0
+						    && now - _ftc_physical_setpoint_timestamp < 200_ms
+						    && PX4_ISFINITE(_ftc_physical_fz_des_body);
+		const float fz_des = physical_fz_des_recent ? _ftc_physical_fz_des_body :
+				     control_sp(5) * thrust_control_to_specific_force;
+	_ftc_indi_fz_des = fz_des;
+	const float force_error = fz_des - _ftc_indi_y_dot_f(2);
+	const float force_integrator_limit = math::constrain(_param_ca_ftc_indi_ilim.get(), 0.f, 20.f);
+	_ftc_indi_force_error_int = math::constrain(_ftc_indi_force_error_int + force_error * dt,
+				    -force_integrator_limit, force_integrator_limit);
+
+	const float rates_sp_dot_limit = math::max(_param_ca_ftc_indi_sdl.get(), 0.f);
+	Vector3f rates_sp_dot_limited{_rates_sp_dot(0), _rates_sp_dot(1), 0.f};
+
+	if (rates_sp_dot_limit > FLT_EPSILON) {
+		rates_sp_dot_limited(0) = math::constrain(rates_sp_dot_limited(0), -rates_sp_dot_limit, rates_sp_dot_limit);
+		rates_sp_dot_limited(1) = math::constrain(rates_sp_dot_limited(1), -rates_sp_dot_limit, rates_sp_dot_limit);
+	}
+
+	Vector3f nu_in{
+		rates_sp_dot_limited(0) + _param_ca_ftc_indi_k1.get() * (_rates_sp(0) - _angular_rates(0)),
+		rates_sp_dot_limited(1) + _param_ca_ftc_indi_k2.get() * (_rates_sp(1) - _angular_rates(1)),
+		fz_des + _param_ca_ftc_indi_k3.get() * _ftc_indi_force_error_int
+	};
+	_ftc_indi_nu_in = nu_in;
+
+	SquareMatrix<float, 3> control_effectiveness;
+
+	for (int motor = 0; motor < 3; motor++) {
+		const Vector3f motor_effectiveness = indi_effectiveness_column(healthy_columns[motor]);
+
+		for (int axis = 0; axis < 3; axis++) {
+			control_effectiveness(axis, motor) = motor_effectiveness(axis);
+			_ftc_indi_g_raw[axis * 3 + motor] = motor_effectiveness(axis);
+		}
+	}
+
+	_ftc_indi_effectiveness_det =
+		control_effectiveness(0, 0) * (control_effectiveness(1, 1) * control_effectiveness(2, 2) -
+					       control_effectiveness(1, 2) * control_effectiveness(2, 1))
+		- control_effectiveness(0, 1) * (control_effectiveness(1, 0) * control_effectiveness(2, 2) -
+						 control_effectiveness(1, 2) * control_effectiveness(2, 0))
+		+ control_effectiveness(0, 2) * (control_effectiveness(1, 0) * control_effectiveness(2, 1) -
+						 control_effectiveness(1, 1) * control_effectiveness(2, 0));
+
+	SquareMatrix<float, 3> scaled_control_effectiveness;
+
+	for (int axis = 0; axis < 3; axis++) {
+		float row_max_abs = 0.f;
+
+		for (int motor = 0; motor < 3; motor++) {
+			row_max_abs = math::max(row_max_abs, fabsf(control_effectiveness(axis, motor)));
+		}
+
+		if (row_max_abs < FLT_EPSILON) {
+			_ftc_indi_latched_active = false;
+			return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_SINGULAR_EFFECTIVENESS);
+		}
+
+		_ftc_indi_row_scale[axis] = 1.f / row_max_abs;
+
+		for (int motor = 0; motor < 3; motor++) {
+			scaled_control_effectiveness(axis, motor) = control_effectiveness(axis, motor) * _ftc_indi_row_scale[axis];
+			_ftc_indi_g_scaled[axis * 3 + motor] = scaled_control_effectiveness(axis, motor);
+		}
+	}
+
+	_ftc_indi_scaled_det =
+		scaled_control_effectiveness(0, 0) * (scaled_control_effectiveness(1, 1) * scaled_control_effectiveness(2, 2) -
+				scaled_control_effectiveness(1, 2) * scaled_control_effectiveness(2, 1))
+		- scaled_control_effectiveness(0, 1) * (scaled_control_effectiveness(1, 0) * scaled_control_effectiveness(2, 2) -
+				scaled_control_effectiveness(1, 2) * scaled_control_effectiveness(2, 0))
+		+ scaled_control_effectiveness(0, 2) * (scaled_control_effectiveness(1, 0) * scaled_control_effectiveness(2, 1) -
+				scaled_control_effectiveness(1, 1) * scaled_control_effectiveness(2, 0));
+
+	Vector3f scaled_row_norms{};
+
+	for (int axis = 0; axis < 3; axis++) {
+		for (int motor = 0; motor < 3; motor++) {
+			scaled_row_norms(axis) += scaled_control_effectiveness(axis, motor) * scaled_control_effectiveness(axis, motor);
+		}
+
+		scaled_row_norms(axis) = sqrtf(scaled_row_norms(axis));
+	}
+
+	const float min_scaled_row_norm = math::min(scaled_row_norms(0), math::min(scaled_row_norms(1), scaled_row_norms(2)));
+	const float max_scaled_row_norm = math::max(scaled_row_norms(0), math::max(scaled_row_norms(1), scaled_row_norms(2)));
+	_ftc_indi_cond_proxy = min_scaled_row_norm > FLT_EPSILON ? max_scaled_row_norm / min_scaled_row_norm : INFINITY;
+
+	SquareMatrix<float, 3> scaled_control_effectiveness_inv;
+
+	if (!matrix::inv(scaled_control_effectiveness, scaled_control_effectiveness_inv)) {
+		_ftc_indi_latched_active = false;
+		return fail_single_indi(control_allocator_ftc_debug_s::INDI_FAIL_SINGULAR_EFFECTIVENESS);
+	}
+
+	_ftc_indi_matrix_invertible = true;
+
+	const Vector3f control_error = nu_in - _ftc_indi_y_dot_f;
+	_ftc_indi_error = control_error;
+	// Numerical row scaling only changes the units used by the solver:
+	//   S * Ghat * delta_omega2 = S * (nu_in - y_dot_f)
+	// It preserves the physical solution while avoiding matrix::inv()'s absolute determinant threshold.
+	const Vector3f scaled_control_error{
+		control_error(0) * _ftc_indi_row_scale[0],
+		control_error(1) * _ftc_indi_row_scale[1],
+		control_error(2) * _ftc_indi_row_scale[2]
+	};
+	const Vector3f unconstrained_delta_u = scaled_control_effectiveness_inv * scaled_control_error;
+	const float delta_u_limit = math::max(_param_ca_ftc_indi_dul.get(), 0.f) * max_omega2 * math::max(dt, 0.0002f);
+	Vector3f healthy_delta_u = unconstrained_delta_u;
+
+	Vector3f delta_min{};
+	Vector3f delta_max{};
+
+	for (int col = 0; col < 3; col++) {
+		const int motor_column = healthy_columns[col];
+		const float min_omega2_command = math::sq(math::max(actuator_min(motor_column), 0.f) * omega_max);
+		const float max_omega2_command = math::sq(math::max(actuator_max(motor_column), 0.f) * omega_max);
+		delta_min(col) = min_omega2_command - _ftc_indi_u_f[motor_column];
+		delta_max(col) = max_omega2_command - _ftc_indi_u_f[motor_column];
+
+		if (delta_u_limit > FLT_EPSILON) {
+			delta_min(col) = math::max(delta_min(col), -delta_u_limit);
+			delta_max(col) = math::min(delta_max(col), delta_u_limit);
+		}
+	}
+
+	const bool unconstrained_feasible = unconstrained_delta_u(0) >= delta_min(0) && unconstrained_delta_u(0) <= delta_max(0)
+					     && unconstrained_delta_u(1) >= delta_min(1) && unconstrained_delta_u(1) <= delta_max(1)
+					     && unconstrained_delta_u(2) >= delta_min(2) && unconstrained_delta_u(2) <= delta_max(2);
+
+	if (!unconstrained_feasible) {
+		float best_cost = FLT_MAX;
+		Vector3f best_delta{};
+
+		for (int active_set = 0; active_set < 27; active_set++) {
+			int state[3] {};
+			int state_code = active_set;
+			Vector3f candidate{};
+			Vector3f residual = scaled_control_error;
+			int free_index[3] {};
+			int free_count = 0;
+
+			for (int col = 0; col < 3; col++) {
+				state[col] = state_code % 3;
+				state_code /= 3;
+
+				if (state[col] == 0) {
+					free_index[free_count++] = col;
+
+				} else {
+					candidate(col) = (state[col] == 1) ? delta_min(col) : delta_max(col);
+
+					for (int axis = 0; axis < 3; axis++) {
+						residual(axis) -= scaled_control_effectiveness(axis, col) * candidate(col);
+					}
+				}
+			}
+
+			bool valid = true;
+
+			switch (free_count) {
+			case 3:
+				candidate = scaled_control_effectiveness_inv * scaled_control_error;
+				break;
+
+			case 2: {
+					const int c0 = free_index[0];
+					const int c1 = free_index[1];
+					float a00 = 0.f;
+					float a01 = 0.f;
+					float a11 = 0.f;
+					float b0 = 0.f;
+					float b1 = 0.f;
+
+					for (int axis = 0; axis < 3; axis++) {
+						const float g0 = scaled_control_effectiveness(axis, c0);
+						const float g1 = scaled_control_effectiveness(axis, c1);
+						a00 += g0 * g0;
+						a01 += g0 * g1;
+						a11 += g1 * g1;
+						b0 += g0 * residual(axis);
+						b1 += g1 * residual(axis);
+					}
+
+					const float det = a00 * a11 - a01 * a01;
+
+					if (fabsf(det) > FLT_EPSILON) {
+						candidate(c0) = (b0 * a11 - b1 * a01) / det;
+						candidate(c1) = (a00 * b1 - a01 * b0) / det;
+
+					} else {
+						valid = false;
+					}
+				}
+
+				break;
+
+			case 1: {
+					const int c0 = free_index[0];
+					float a00 = 0.f;
+					float b0 = 0.f;
+
+					for (int axis = 0; axis < 3; axis++) {
+						const float g0 = scaled_control_effectiveness(axis, c0);
+						a00 += g0 * g0;
+						b0 += g0 * residual(axis);
+					}
+
+					if (a00 > FLT_EPSILON) {
+						candidate(c0) = b0 / a00;
+
+					} else {
+						valid = false;
+					}
+				}
+
+				break;
+
+			case 0:
+				break;
+
+			default:
+				valid = false;
+				break;
+			}
+
+			for (int col = 0; col < 3; col++) {
+				if (candidate(col) < delta_min(col) - 1e-5f || candidate(col) > delta_max(col) + 1e-5f) {
+					valid = false;
+					break;
+				}
+			}
+
+			if (!valid) {
+				continue;
+			}
+
+			Vector3f achieved{};
+
+			for (int col = 0; col < 3; col++) {
+				for (int axis = 0; axis < 3; axis++) {
+					achieved(axis) += scaled_control_effectiveness(axis, col) * candidate(col);
+				}
+			}
+
+			const Vector3f solve_error = achieved - scaled_control_error;
+			const float cost = solve_error.norm_squared();
+
+			if (cost < best_cost) {
+				best_cost = cost;
+				best_delta = candidate;
+			}
+		}
+
+		if (best_cost < FLT_MAX) {
+			healthy_delta_u = best_delta;
+		}
+	}
+
+	_ftc_indi_delta_omega2 = healthy_delta_u;
+
+	for (int col = 0; col < 3; col++) {
+		const int motor_column = healthy_columns[col];
+		const float delta_u = math::constrain(healthy_delta_u(col), delta_min(col), delta_max(col));
+
+		const float omega2_command = _ftc_indi_u_f[motor_column] + delta_u;
+		_ftc_indi_omega2_cmd[motor_column] = omega2_command;
+		const float actuator_command = sqrtf(math::max(omega2_command, 0.f)) / omega_max;
+		actuator_sp(motor_column) = math::constrain(actuator_command, actuator_min(motor_column), actuator_max(motor_column));
+	}
+
+	actuator_sp(fault_column) = applied_fault_command;
+	_ftc_indi_omega2_cmd[fault_column] = motor_omega2_feedback(fault_column, applied_fault_command);
+
+	for (int i = 0; i < NUM_ACTUATORS; i++) {
+		const float command = PX4_ISFINITE(actuator_sp(i)) ? actuator_sp(i) : 0.f;
+		_ftc_indi_input_raw[i] = motor_omega2_feedback(i, command);
+	}
+
+	float allocated_yaw_moment = 0.f;
+
+	for (int i = 0; i < NUM_ACTUATORS; i++) {
+		allocated_yaw_moment += effectiveness(2, i) * actuator_sp(i);
+	}
+
+	_ftc_residual_yaw_moment = control_sp(2) - allocated_yaw_moment;
+	_ftc_indi_success = true;
+	_ftc_indi_fail_reason = control_allocator_ftc_debug_s::INDI_FAIL_NONE;
+
+	if (!was_indi_active) {
+		PX4_WARN("FTC INDI active: motor=%d nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f t=%.3fs",
+			 _ftc_fault_motor_idx + 1, (double)_ftc_fault_nominal_command, (double)_ftc_fault_applied_command,
+			 (double)_ftc_fault_command_limit, (double)_ftc_residual_yaw_moment, (double)(now / 1e6));
+		mavlink_log_warning(&_mavlink_log_pub, "FTC INDI active m%d lim=%.2f\t",
+				    _ftc_fault_motor_idx + 1, (double)_ftc_fault_command_limit);
+	}
+
+	return true;
+}
+
+void
+ControlAllocator::apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp,
+		hrt_abstime now, float dt)
+{
+	if (_param_ca_ftc_dual_en.get()) {
+		if (apply_active_ftc_dual_indi_allocation(matrix_index, control_sp, now, dt)) {
+			return;
+		}
+
+		_ftc_fault_nominal_command = 0.f;
+		_ftc_fault_applied_command = 0.f;
+		_ftc_fault_command_limit = 0.f;
+		_ftc_residual_yaw_moment = 0.f;
+		_reaction_wheel_torque_command = 0.f;
 		_reaction_wheel_active = false;
+		_reaction_wheel_latched_active = false;
+		_ftc_indi_latched_active = false;
 		return;
 	}
 
-	const matrix::Vector3f healthy_solution = reduced_effectiveness_inv * reduced_control_target;
-
-	for (int col = 0; col < 3; col++) {
-		const float actuator_command = actuator_trim(healthy_columns[col]) + healthy_solution(col);
-		actuator_sp(healthy_columns[col]) = math::constrain(actuator_command, actuator_min(healthy_columns[col]),
-					 actuator_max(healthy_columns[col]));
+	if (_param_ca_ftc_indi_en.get() && apply_active_ftc_indi_allocation(matrix_index, control_sp, now, dt)) {
+		return;
 	}
 
-	actuator_sp(fault_motor_matrix_column) = math::constrain(applied_fault_command, actuator_min(fault_motor_matrix_column),
-				 actuator_max(fault_motor_matrix_column));
+	_ftc_fault_nominal_command = 0.f;
+	_ftc_fault_applied_command = 0.f;
+	_ftc_fault_command_limit = 1.f;
+	_ftc_residual_yaw_moment = 0.f;
+	_reaction_wheel_torque_command = 0.f;
+	_reaction_wheel_active = false;
+	_reaction_wheel_latched_active = false;
+	_ftc_indi_latched_active = false;
+	_ftc_dual_indi_active = false;
+}
 
-	const matrix::Vector<float, NUM_AXES> allocated_control = _control_allocation[matrix_index]->getAllocatedControl();
-	_ftc_residual_yaw_moment = control_sp(2) - allocated_control(2);
-	// Publish the wheel/body-reaction-sign-corrected feedforward torque request.
-	// Yaw-rate feedback is intentionally applied downstream in
-	// reaction_wheel_torque_control, not in the allocator.
-	_reaction_wheel_torque_command = _ftc_residual_yaw_moment;
-	_reaction_wheel_active = _reaction_wheel_latched_active;
+bool
+ControlAllocator::get_dual_pair_motor_indices(int failed_motors[2], int remaining_motors[2]) const
+{
+	const int pair = math::constrain(_param_ca_ftc_pair.get(), int32_t{0}, int32_t{1});
 
-	if (!was_reaction_wheel_active) {
-		PX4_WARN("FTC reallocation active: motor=%d nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f t=%.3fs",
-			 _ftc_fault_motor_idx + 1, (double)_ftc_fault_nominal_command, (double)_ftc_fault_applied_command,
-			 (double)_ftc_fault_command_limit, (double)_ftc_residual_yaw_moment,
-			 (double)_reaction_wheel_torque_command, (double)(now / 1e6));
-		mavlink_log_warning(&_mavlink_log_pub, "FTC realloc active m%d lim=%.2f\t",
-				    _ftc_fault_motor_idx + 1, (double)_ftc_fault_command_limit);
+	if (pair == 0) {
+		failed_motors[0] = 0;
+		failed_motors[1] = 1;
+		remaining_motors[0] = 2;
+		remaining_motors[1] = 3;
+
+	} else {
+		failed_motors[0] = 2;
+		failed_motors[1] = 3;
+		remaining_motors[0] = 0;
+		remaining_motors[1] = 1;
 	}
+
+	return true;
+}
+
+uint16_t
+ControlAllocator::get_ftc_fault_motor_mask() const
+{
+	if (!_ftc_fault_trigger_active) {
+		return 0;
+	}
+
+	if (_param_ca_ftc_dual_en.get()) {
+		int failed_motors[2] {};
+		int remaining_motors[2] {};
+		get_dual_pair_motor_indices(failed_motors, remaining_motors);
+		return (1u << failed_motors[0]) | (1u << failed_motors[1]);
+	}
+
+	return _ftc_fault_motor_idx >= 0 ? (1u << _ftc_fault_motor_idx) : 0;
+}
+
+uint16_t
+ControlAllocator::get_ftc_remaining_motor_mask() const
+{
+	if (!_ftc_fault_trigger_active || !_param_ca_ftc_dual_en.get()) {
+		return 0;
+	}
+
+	int failed_motors[2] {};
+	int remaining_motors[2] {};
+	get_dual_pair_motor_indices(failed_motors, remaining_motors);
+	return (1u << remaining_motors[0]) | (1u << remaining_motors[1]);
+}
+
+bool
+ControlAllocator::apply_active_ftc_dual_indi_allocation(int matrix_index,
+		const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now, float dt)
+{
+	const bool was_dual_indi_active = _ftc_dual_indi_active;
+	_ftc_dual_indi_active = false;
+	_reaction_wheel_torque_command = 0.f;
+	_reaction_wheel_active = false;
+	_reaction_wheel_latched_active = false;
+	_ftc_dual_debug_y.zero();
+	_ftc_dual_debug_nu.zero();
+	_ftc_dual_debug_u.zero();
+	_ftc_dual_debug_chi = 0.f;
+	_ftc_dual_debug_sl = 0.f;
+	_ftc_dual_debug_sn = 0.f;
+
+	if (!_ftc_fault_trigger_active || matrix_index != 0 || _num_actuators[(int)ActuatorType::MOTORS] != 4
+	    || !_vehicle_attitude_valid || !_vehicle_attitude_setpoint_valid || !_local_position_valid || !_local_position_sp_valid) {
+		return false;
+	}
+
+	int failed_motors[2] {};
+	int remaining_motors[2] {};
+	get_dual_pair_motor_indices(failed_motors, remaining_motors);
+
+	int failed_columns[2] {-1, -1};
+	int remaining_columns[2] {-1, -1};
+
+	for (int i = 0; i < 2; ++i) {
+		if (!get_motor_column_index(failed_motors[i], matrix_index, failed_columns[i])
+		    || !get_motor_column_index(remaining_motors[i], matrix_index, remaining_columns[i])) {
+			return false;
+		}
+	}
+
+	const ActuatorEffectiveness::EffectivenessMatrix &effectiveness =
+		_control_allocation[matrix_index]->getEffectivenessMatrix();
+	const ActuatorVector &actuator_min = _control_allocation[matrix_index]->getActuatorMin();
+	const ActuatorVector &actuator_max = _control_allocation[matrix_index]->getActuatorMax();
+	ActuatorVector &actuator_sp = _control_allocation[matrix_index]->_actuator_sp;
+
+	_ftc_fault_nominal_command = 0.5f * (actuator_sp(failed_columns[0]) + actuator_sp(failed_columns[1]));
+	_ftc_fault_command_limit = 0.f;
+	_ftc_fault_applied_command = 0.f;
+
+	for (int i = 0; i < 2; ++i) {
+		actuator_sp(failed_columns[i]) = math::max(actuator_min(failed_columns[i]), 0.f);
+	}
+
+	const Dcmf R{_vehicle_attitude_q};
+	const Dcmf R_des{_vehicle_attitude_setpoint_q};
+	Vector3f n_des_inertial = R_des.col(2);
+	n_des_inertial *= -1.f;
+
+	const Vector3f h = R.transpose() * n_des_inertial;
+	const float h1 = h(0);
+	const float h2 = h(1);
+	const float h3 = math::constrain(h(2), -1.f, -0.05f);
+	const float sl = (_param_ca_ftc_pair.get() == 0) ? -1.f : 1.f;
+	const float chi = sl * math::radians(math::constrain(_param_ca_ftc_chi.get(), 1.f, 179.f));
+	const float c = cosf(chi);
+	const float s = sinf(chi);
+	const float y2 = h1 * c + h2 * s;
+	const float y2_dot = c * (-h3 * _angular_rates(1) + h2 * _angular_rates(2))
+			     + s * (h3 * _angular_rates(0) - h1 * _angular_rates(2));
+
+	const float z_ref = PX4_ISFINITE(_local_position_sp(2)) ? _local_position_sp(2) : _local_position(2);
+	const float vz_ref = PX4_ISFINITE(_local_velocity_sp(2)) ? _local_velocity_sp(2) : 0.f;
+	const float zdd_ref = PX4_ISFINITE(_local_acceleration_sp(2)) ? _local_acceleration_sp(2) : 0.f;
+
+	Vector2f nu{
+		-_param_ca_ftc_z_p.get() * (_local_position(2) - z_ref) - _param_ca_ftc_z_d.get() * (_local_velocity(2) - vz_ref) + zdd_ref,
+		-_param_ca_ftc_y2_p.get() * y2 - _param_ca_ftc_y2_d.get() * y2_dot
+	};
+
+	const float cutoff = math::max(_param_ca_ftc_indi_fc.get(), 1.f);
+	const float rc = 1.f / (2.f * M_PI_F * cutoff);
+	const float alpha = math::constrain(dt / (dt + rc), 0.f, 1.f);
+
+	const float z_ddot_raw = PX4_ISFINITE(_local_acceleration(2)) ? _local_acceleration(2) :
+				 ((was_dual_indi_active && PX4_ISFINITE(_ftc_dual_zdot_prev))
+				  ? (_local_velocity(2) - _ftc_dual_zdot_prev) / math::max(dt, 0.0002f) : 0.f);
+	const float y2_dot_f_raw = was_dual_indi_active ? _ftc_dual_y2_dot_f + (y2_dot - _ftc_dual_y2_dot_f) * alpha : y2_dot;
+	const float y2_ddot_raw = was_dual_indi_active ? (y2_dot_f_raw - _ftc_dual_y2_dot_prev) / math::max(dt, 0.0002f) : 0.f;
+
+	Vector2f y_ddot_raw{z_ddot_raw, y2_ddot_raw};
+
+	if (!_ftc_indi_filter_initialized || !was_dual_indi_active) {
+		_ftc_dual_y_ddot_f = y_ddot_raw;
+		_ftc_dual_zdot_prev = _local_velocity(2);
+		_ftc_dual_y2_dot_f = y2_dot;
+		_ftc_dual_y2_dot_prev = y2_dot;
+
+		for (int i = 0; i < 2; ++i) {
+			_ftc_dual_u_f(i) = math::constrain(PX4_ISFINITE(actuator_sp(remaining_columns[i])) ? actuator_sp(remaining_columns[i]) : 0.f,
+							   actuator_min(remaining_columns[i]), actuator_max(remaining_columns[i]));
+		}
+
+		_ftc_indi_filter_initialized = true;
+
+	} else {
+		_ftc_dual_y_ddot_f += (y_ddot_raw - _ftc_dual_y_ddot_f) * alpha;
+		_ftc_dual_zdot_prev = _local_velocity(2);
+		_ftc_dual_y2_dot_f = y2_dot_f_raw;
+		_ftc_dual_y2_dot_prev = y2_dot_f_raw;
+	}
+
+	const float hover_thrust = math::constrain(_param_mpc_thr_hover.get(), 0.05f, 0.9f);
+	const float thrust_per_input = _param_ca_ftc_indi_m.get() * 9.80665f / (4.f * hover_thrust);
+	const float ixx = math::max(_param_ca_ftc_indi_ix.get(), 0.001f);
+	const float iyy = math::max(_param_ca_ftc_indi_iy.get(), 0.001f);
+
+	matrix::Matrix<float, 2, 2> B;
+
+	for (int i = 0; i < 2; ++i) {
+		const int col = remaining_columns[i];
+		const float thrust_abs = math::max(fabsf(effectiveness(5, col)), FLT_EPSILON);
+		const float roll_accel_per_input = effectiveness(0, col) / thrust_abs * thrust_per_input / ixx;
+		const float pitch_accel_per_input = effectiveness(1, col) / thrust_abs * thrust_per_input / iyy;
+		B(0, i) = -R(2, 2) * 9.80665f / (4.f * hover_thrust);
+			B(1, i) = h3 * (s * roll_accel_per_input - c * pitch_accel_per_input);
+	}
+
+	const float det = B(0, 0) * B(1, 1) - B(0, 1) * B(1, 0);
+
+	if (fabsf(det) < 1e-5f || !PX4_ISFINITE(det)) {
+		return false;
+	}
+
+	const Vector2f control_error = nu - _ftc_dual_y_ddot_f;
+	Vector2f delta_u{
+		(B(1, 1) * control_error(0) - B(0, 1) * control_error(1)) / det,
+		(-B(1, 0) * control_error(0) + B(0, 0) * control_error(1)) / det
+	};
+
+	const float delta_u_limit = math::max(_param_ca_ftc_indi_dul.get(), 0.f) * math::max(dt, 0.0002f);
+
+	for (int i = 0; i < 2; ++i) {
+		const int col = remaining_columns[i];
+		float delta_min = actuator_min(col) - _ftc_dual_u_f(i);
+		float delta_max = actuator_max(col) - _ftc_dual_u_f(i);
+
+		if (delta_u_limit > FLT_EPSILON) {
+			delta_min = math::max(delta_min, -delta_u_limit);
+			delta_max = math::min(delta_max, delta_u_limit);
+		}
+
+		actuator_sp(col) = math::constrain(_ftc_dual_u_f(i) + math::constrain(delta_u(i), delta_min, delta_max),
+						   actuator_min(col), actuator_max(col));
+		_ftc_dual_debug_u(i) = actuator_sp(col);
+		_ftc_dual_u_f(i) = actuator_sp(col);
+	}
+
+	float allocated_yaw_moment = 0.f;
+
+	for (int i = 0; i < NUM_ACTUATORS; i++) {
+		allocated_yaw_moment += effectiveness(2, i) * actuator_sp(i);
+	}
+
+	float sn_accum = 0.f;
+
+	for (int i = 0; i < 2; ++i) {
+		sn_accum += effectiveness(2, remaining_columns[i]);
+	}
+
+	_ftc_residual_yaw_moment = control_sp(2) - allocated_yaw_moment;
+	_ftc_dual_debug_chi = chi;
+	_ftc_dual_debug_sl = sl;
+	_ftc_dual_debug_sn = (sn_accum >= 0.f) ? 1.f : -1.f;
+	_ftc_dual_debug_y = _ftc_dual_y_ddot_f;
+	_ftc_dual_debug_nu = nu;
+	_ftc_dual_indi_active = true;
+	_ftc_indi_latched_active = true;
+
+	PX4_DEBUG("FTC dual INDI m%d/m%d off, m%d/m%d active",
+		  failed_motors[0] + 1, failed_motors[1] + 1, remaining_motors[0] + 1, remaining_motors[1] + 1);
+
+	return true;
 }
 
 float
 ControlAllocator::get_ftc_fault_output_limit() const
 {
+	if (_param_ca_ftc_dual_en.get() && _ftc_fault_trigger_active) {
+		return 0.f;
+	}
+
 	if (_ftc_fault_motor_idx < 0 || _num_control_allocation == 0 || _control_allocation[0] == nullptr) {
 		return NAN;
 	}
@@ -1012,13 +1867,13 @@ ControlAllocator::get_ftc_fault_output_limit() const
 void
 ControlAllocator::apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const
 {
-	if (!_ftc_output_fault_active || _ftc_fault_motor_idx < 0 || _ftc_fault_motor_idx >= MAX_NUM_MOTORS) {
+	if (!_ftc_output_fault_active) {
 		return;
 	}
 
-	float &fault_control = controls[_ftc_fault_motor_idx];
+	const uint16_t fault_mask = get_ftc_fault_motor_mask();
 
-	if (!PX4_ISFINITE(fault_control)) {
+	if (fault_mask == 0) {
 		return;
 	}
 
@@ -1028,7 +1883,17 @@ ControlAllocator::apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const
 		return;
 	}
 
-	fault_control = fminf(fault_control, fault_limit);
+	for (int motor_idx = 0; motor_idx < MAX_NUM_MOTORS; ++motor_idx) {
+		if ((fault_mask & (1u << motor_idx)) == 0u) {
+			continue;
+		}
+
+		float &fault_control = controls[motor_idx];
+
+		if (PX4_ISFINITE(fault_control)) {
+			fault_control = fminf(fault_control, fault_limit);
+		}
+	}
 }
 
 void
@@ -1418,8 +2283,8 @@ int ControlAllocator::print_status()
 	const char *mode_str = "normal";
 
 	switch (_ftc_mode) {
-	case FtcMode::FAULT_DEGRADED:
-		mode_str = "fault_degraded";
+	case FtcMode::FAULT_INDI:
+		mode_str = "fault_indi";
 		break;
 
 	case FtcMode::FAULT_NOMINAL:
@@ -1456,8 +2321,8 @@ int ControlAllocator::print_status()
 		 fault_type_str,
 		 (double)_ftc_current_loe);
 
-	PX4_INFO("FTC alloc: degraded=%s output_fault=%s nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f wheel_active=%s",
-		 _ftc_degraded_allocation_active ? "yes" : "no",
+	PX4_INFO("FTC alloc: indi=%s output_fault=%s nominal=%.3f applied=%.3f limit=%.3f yaw_res=%.3f wheel=%.3f wheel_active=%s",
+		 _ftc_indi_control_active ? "yes" : "no",
 		 _ftc_output_fault_active ? "yes" : "no",
 		 (double)_ftc_fault_nominal_command,
 		 (double)_ftc_fault_applied_command,

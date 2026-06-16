@@ -375,19 +375,19 @@ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf
 #endif
     presetManager->CurrentProfile("default_physics");
 
-    // We currently need to have the real_time_update_rate at a multiple of 250 Hz for lockstep.
-    // Also, the max_step_size needs to match this (e.g. 0.004 s at 250 Hz or 0.002 s at 500 Hz).
-    // Therefore we check these params and abort if they won't work.
+    // Lockstep requires a positive real_time_update_rate and a matching max_step_size.
+    // The INDI FTC experiments use 512 Hz to match the paper's IMU/control timing,
+    // so do not restrict the world rate to PX4's historical 250 Hz multiples.
 
     presetManager->GetCurrentProfileParam("real_time_update_rate", param);
     double real_time_update_rate = our_any_cast<double>(param);
     const int real_time_update_rate_int = static_cast<int>(real_time_update_rate + 0.5);
 
-    if (real_time_update_rate_int % 250 != 0)
+    if (real_time_update_rate_int <= 0)
     {
-      gzerr << "real_time_update_rate is " << real_time_update_rate_int
-            << " but needs to be multiple of 250 Hz, aborting.\n";
-      abort();
+	      gzerr << "real_time_update_rate is " << real_time_update_rate_int
+	            << " but needs to be positive, aborting.\n";
+	      abort();
     }
 
     presetManager->GetCurrentProfileParam("max_step_size", param);
@@ -400,7 +400,9 @@ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf
       abort();
     }
 
-    update_skip_factor_ = real_time_update_rate_int / 250;
+    // PX4's stock Gazebo Classic bridge historically throttled lockstep to 250 Hz.
+    // The INDI FTC experiments follow the paper's 512 Hz inner-loop target.
+    update_skip_factor_ = std::max(1, static_cast<int>(real_time_update_rate / 512.0 + 0.5));
 
     // Adapt the real_time_update_rate according to the speed
     // that we ask for in the env variable.
@@ -468,7 +470,7 @@ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf
   // This doesn't seem to be used anywhere but we leave it here
   // for potential compatibility
   if (_sdf->HasElement("imu_rate")) {
-    imu_update_interval_ = 1 / _sdf->GetElement("imu_rate")->Get<int>();
+    imu_update_interval_ = 1.0 / _sdf->GetElement("imu_rate")->Get<int>();
   }
 
   if (_sdf->HasElement("mavlink_addr")) {

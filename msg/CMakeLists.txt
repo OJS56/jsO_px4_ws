@@ -234,6 +234,7 @@ set(msg_files
 	VehicleAirData.msg
 	VehicleAngularAccelerationSetpoint.msg
 	VehicleConstraints.msg
+	VehicleFtcPhysicalSetpoint.msg
 	VehicleImu.msg
 	VehicleImuStatus.msg
 	VehicleLocalPositionSetpoint.msg

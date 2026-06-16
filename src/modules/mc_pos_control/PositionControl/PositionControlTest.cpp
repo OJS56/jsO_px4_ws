@@ -229,6 +229,33 @@ TEST_F(PositionControlBasicTest, IdleThrustInput)
 	EXPECT_FLOAT_EQ(_output_setpoint.thrust[2], -.1f); // minimum thrust
 }
 
+TEST_F(PositionControlBasicTest, FtcPrimaryAxisThrustCompensationScalesMagnitudeOnly)
+{
+	Vector3f(1.f, 2.f, 0.f).copyTo(_input_setpoint.acceleration);
+	EXPECT_TRUE(runController());
+
+	const Vector3f nominal_thrust(_output_setpoint.thrust);
+	const Vector3f nominal_body_z = Quatf(_attitude.q_d).dcm_z();
+	const float nominal_attitude_thrust = _attitude.thrust_body[2];
+
+	_position_control.setFtcPrimaryAxisThrustCompensation(true, -0.96f);
+	EXPECT_TRUE(runController());
+
+	const Vector3f ftc_thrust(_output_setpoint.thrust);
+	const Vector3f ftc_body_z = Quatf(_attitude.q_d).dcm_z();
+	const float expected_scale = 1.f / 0.96f;
+
+	EXPECT_NEAR(ftc_thrust.norm(), nominal_thrust.norm() * expected_scale, 1e-5f);
+	EXPECT_NEAR(ftc_thrust.normalized().dot(nominal_thrust.normalized()), 1.f, 1e-5f);
+	EXPECT_NEAR(ftc_body_z.dot(nominal_body_z), 1.f, 1e-5f);
+	EXPECT_NEAR(_attitude.thrust_body[2], nominal_attitude_thrust * expected_scale, 1e-5f);
+
+	_position_control.setFtcPrimaryAxisThrustCompensation(false, -0.96f);
+	EXPECT_TRUE(runController());
+	EXPECT_NEAR(Vector3f(_output_setpoint.thrust).norm(), nominal_thrust.norm(), 1e-5f);
+	EXPECT_NEAR(_attitude.thrust_body[2], nominal_attitude_thrust, 1e-5f);
+}
+
 TEST_F(PositionControlBasicTest, InputCombinationsPosition)
 {
 	Vector3f(.1f, .2f, .3f).copyTo(_input_setpoint.position);

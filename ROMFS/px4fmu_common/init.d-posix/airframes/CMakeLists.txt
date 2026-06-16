@@ -88,6 +88,7 @@ px4_add_romfs_files(
 	4019_gz_x500_gimbal
 	4020_gz_tiltrotor
 	4021_gz_x500_flow
+	4022_gz_iris_ftc
 
 	6011_gazebo-classic_typhoon_h480
 	6011_gazebo-classic_typhoon_h480.post
@@ -102,6 +103,7 @@ px4_add_romfs_files(
 	10020_gazebo-classic_iris_ftc
 	10021_gazebo-classic_iris_ftc_rw
 	10022_gazebo-classic_iris_ftc_rw_torque
+	10023_gazebo-classic_bebop2_ftc
 	10030_gazebo-classic_px4vision
 
 	10040_sihsim_quadx

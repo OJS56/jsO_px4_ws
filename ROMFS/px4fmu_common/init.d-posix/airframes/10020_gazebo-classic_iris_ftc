@@ -13,11 +13,35 @@
 
 param set-default CA_FTC_EN 1
 param set-default CA_FTC_TYPE 1
-param set-default CA_FTC_MOT 3
-param set-default CA_FTC_LOE 0.68
+param set-default CA_FTC_MOT 2
+param set-default CA_FTC_LOE 0.0
 param set-default CA_FTC_TRIG_MODE 1
 param set-default CA_FTC_STATE 0
 param set-default CA_FTC_ALC_MODE 1
+param set-default CA_FTC_DUAL_EN 0
+param set-default CA_FTC_INDI_EN 1
+param set-default CA_FTC_KF 0.00000584
+param set-default CA_FTC_OMAX 1500.0
+param set-default CA_FTC_ERPMAX 6000.0
+param set-default CA_FTC_INDI_SDL 0.0
+param set-default CA_FTC_INDI_DUL 0.0
+param set-default CA_FTC_INDI_K1 8.0
+param set-default CA_FTC_INDI_K2 8.0
+param set-default CA_FTC_INDI_K3 8.0
+param set-default CA_FTC_INDI_FC 15.0
+param set-default MC_FTC_INDI_EN 1
+# These are the relaxed single-rotor primary axis values used by the FTC
+# experiment. Force them here because set-default can preserve stale SITL
+# values from previous non-FTC runs.
+param set MC_FTC_NX 0.20
+param set MC_FTC_NY 0.20
+param set MC_FTC_NZ -0.96
+param set-default MC_FTC_KX 3.0
+param set-default MC_FTC_KY 3.0
+param set-default MC_ROLLRATE_MAX 360.0
+param set-default MC_PITCHRATE_MAX 360.0
+param set IMU_INTEG_RATE 500
+param set IMU_GYRO_RATEMAX 500
 
 # CA_FTC_YAW_SCL is intentionally left at its module default because the
 # current allocator implementation does not consume it yet.

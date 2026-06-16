@@ -88,6 +88,7 @@ if(gazebo_FOUND)
 	set(models
 		advanced_plane
 		believer
+		bebop2_ftc
 		boat
 		cloudship
 		glider

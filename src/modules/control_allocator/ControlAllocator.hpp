@@ -75,10 +75,19 @@
 #include <uORB/topics/actuator_servos_trim.h>
 #include <uORB/topics/control_allocator_ftc_debug.h>
 #include <uORB/topics/control_allocator_status.h>
+#include <uORB/topics/esc_status.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/reaction_wheel_actuator_setpoint.h>
 #include <uORB/topics/reaction_wheel_setpoint.h>
+#include <uORB/topics/vehicle_acceleration.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
+#include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_control_mode.h>
+#include <uORB/topics/vehicle_ftc_physical_setpoint.h>
+#include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/vehicle_rates_setpoint.h>
 #include <uORB/topics/vehicle_torque_setpoint.h>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
@@ -162,10 +171,19 @@ private:
 	float get_ice_shedding_output(hrt_abstime now);
 
 	void update_ftc_state(hrt_abstime now);
+	void update_ftc_motor_speed_feedback(hrt_abstime now);
 	void update_reaction_wheel_setpoint(float torque_command, float residual_yaw_moment, bool active, hrt_abstime now);
 	bool get_motor_column_index(int motor_idx, int matrix_index, int &matrix_column) const;
-	void apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now);
+	void apply_active_ftc_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now,
+					 float dt);
+	bool apply_active_ftc_indi_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp, hrt_abstime now,
+					      float dt);
+	bool apply_active_ftc_dual_indi_allocation(int matrix_index, const matrix::Vector<float, NUM_AXES> &control_sp,
+			hrt_abstime now, float dt);
 	void apply_ftc_output_fault(float controls[MAX_NUM_MOTORS]) const;
+	uint16_t get_ftc_fault_motor_mask() const;
+	uint16_t get_ftc_remaining_motor_mask() const;
+	bool get_dual_pair_motor_indices(int failed_motors[2], int remaining_motors[2]) const;
 	float get_ftc_fault_output_limit() const;
 	float get_selected_ftc_aux_value() const;
 	bool is_ftc_button_pressed(int button_number) const;
@@ -199,14 +217,9 @@ private:
 		REMOVE_FIRST_FAILING_MOTOR = 1,
 	};
 
-	enum class FtcAllocationMode {
-		NOMINAL_4X4 = 0,
-		DEGRADED_3X3 = 1,
-	};
-
 	enum class FtcMode {
 		NORMAL = 0,
-		FAULT_DEGRADED = 1,
+		FAULT_INDI = 1,
 		FAULT_NOMINAL = 2,
 	};
 
@@ -241,14 +254,43 @@ private:
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
+	uORB::Subscription _vehicle_acceleration_sub{ORB_ID(vehicle_acceleration)};
+	uORB::SubscriptionCallbackWorkItem _vehicle_angular_velocity_sub{this, ORB_ID(vehicle_angular_velocity)};
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	uORB::Subscription _vehicle_attitude_setpoint_sub{ORB_ID(vehicle_attitude_setpoint)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
+	uORB::Subscription _vehicle_ftc_physical_setpoint_sub{ORB_ID(vehicle_ftc_physical_setpoint)};
+	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+	uORB::Subscription _vehicle_local_position_setpoint_sub{ORB_ID(vehicle_local_position_setpoint)};
+	uORB::Subscription _vehicle_rates_setpoint_sub{ORB_ID(vehicle_rates_setpoint)};
+	uORB::SubscriptionCallbackWorkItem _esc_status_sub{this, ORB_ID(esc_status)};
 	uORB::Subscription _failure_detector_status_sub{ORB_ID(failure_detector_status)};
 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
+	matrix::Vector3f _rates_sp;
+	matrix::Vector3f _rates_sp_dot;
+	matrix::Vector3f _angular_rates;
+	matrix::Vector3f _angular_accel;
+	matrix::Vector3f _vehicle_acceleration;
+	matrix::Quatf _vehicle_attitude_q;
+	matrix::Quatf _vehicle_attitude_setpoint_q;
+	matrix::Vector3f _local_position;
+	matrix::Vector3f _local_velocity;
+	matrix::Vector3f _local_acceleration;
+	matrix::Vector3f _local_position_sp;
+	matrix::Vector3f _local_velocity_sp;
+	matrix::Vector3f _local_acceleration_sp;
+	float _ftc_physical_fz_des_body{NAN};
+	hrt_abstime _ftc_physical_setpoint_timestamp{0};
 	bool _publish_controls{true};
+	bool _control_setpoint_valid{false};
+	bool _vehicle_attitude_valid{false};
+	bool _vehicle_attitude_setpoint_valid{false};
+	bool _local_position_valid{false};
+	bool _local_position_sp_valid{false};
 	manual_control_setpoint_s _manual_control_setpoint{};
 
 	// Reflects motor failures that are currently handled, not motor failures that are reported.
@@ -262,7 +304,7 @@ private:
 	bool _armed{false};
 	bool _is_vtol{false};
 	bool _ftc_fault_trigger_active{false};
-	bool _ftc_degraded_allocation_active{false};
+	bool _ftc_indi_control_active{false};
 	bool _ftc_output_fault_active{false};
 	FtcMode _ftc_mode{FtcMode::NORMAL};
 	int _ftc_fault_type{0};
@@ -277,7 +319,50 @@ private:
 	bool _reaction_wheel_active{false};
 	bool _reaction_wheel_latched_active{false};
 	bool _reaction_wheel_reversible_warned{false};
+	bool _ftc_indi_filter_initialized{false};
+	bool _ftc_indi_latched_active{false};
+	bool _ftc_indi_success{false};
+	uint8_t _ftc_indi_fail_reason{control_allocator_ftc_debug_s::INDI_FAIL_NONE};
+	int8_t _ftc_indi_fault_column{-1};
+	uint8_t _ftc_indi_healthy_count{0};
+	bool _ftc_indi_matrix_invertible{false};
+	float _ftc_indi_collective_thrust{0.f};
+	float _ftc_indi_effectiveness_det{0.f};
+	float _ftc_indi_eff_mx[4] {};
+	float _ftc_indi_eff_my[4] {};
+	float _ftc_indi_eff_fz[4] {};
+	float _ftc_indi_ratio_mx_abs_fz[4] {};
+	float _ftc_indi_ratio_my_abs_fz[4] {};
+	float _ftc_indi_g_raw[9] {};
+	float _ftc_indi_g_scaled[9] {};
+	float _ftc_indi_row_scale[3] {};
+	float _ftc_indi_cond_proxy{0.f};
+	float _ftc_indi_scaled_det{0.f};
+	matrix::Vector3f _ftc_indi_nu_in{};
+	matrix::Vector3f _ftc_indi_error{};
+	float _ftc_indi_fz_des{0.f};
+	matrix::Vector3f _ftc_indi_delta_omega2{};
+	float _ftc_indi_omega2_cmd[NUM_ACTUATORS] {};
+	bool _ftc_dual_indi_active{false};
+	matrix::Vector3f _ftc_indi_y_dot_f{};
+	matrix::Vector2f _ftc_dual_y_ddot_f{};
+	matrix::Vector2f _ftc_dual_u_f{};
+	float _ftc_dual_zdot_prev{0.f};
+	float _ftc_dual_y2_dot_f{0.f};
+	float _ftc_dual_y2_dot_prev{0.f};
+	matrix::Vector2f _ftc_dual_debug_y{};
+	matrix::Vector2f _ftc_dual_debug_nu{};
+	matrix::Vector2f _ftc_dual_debug_u{};
+	float _ftc_dual_debug_chi{0.f};
+	float _ftc_dual_debug_sl{0.f};
+	float _ftc_dual_debug_sn{0.f};
+	float _ftc_indi_u_f[NUM_ACTUATORS] {};
+	float _ftc_indi_input_raw[NUM_ACTUATORS] {};
+	float _ftc_motor_omega2_feedback[NUM_ACTUATORS] {};
+	hrt_abstime _ftc_motor_feedback_timestamp[NUM_ACTUATORS] {};
+	float _ftc_indi_force_error_int{0.f};
 	hrt_abstime _last_run{0};
+	hrt_abstime _last_rates_sp_timestamp{0};
 	hrt_abstime _timestamp_sample{0};
 	hrt_abstime _last_status_pub{0};
 
@@ -302,6 +387,28 @@ private:
 		(ParamInt<px4::params::CA_FTC_BTN_DEG>) _param_ca_ftc_btn_deg,
 		(ParamInt<px4::params::CA_FTC_BTN_NOM>) _param_ca_ftc_btn_nom,
 		(ParamInt<px4::params::CA_FTC_ALC_MODE>) _param_ca_ftc_alc_mode,
+		(ParamInt<px4::params::CA_FTC_INDI_EN>) _param_ca_ftc_indi_en,
+		(ParamInt<px4::params::CA_FTC_DUAL_EN>) _param_ca_ftc_dual_en,
+		(ParamInt<px4::params::CA_FTC_PAIR>) _param_ca_ftc_pair,
+		(ParamFloat<px4::params::CA_FTC_CHI>) _param_ca_ftc_chi,
+		(ParamFloat<px4::params::CA_FTC_INDI_K1>) _param_ca_ftc_indi_k1,
+		(ParamFloat<px4::params::CA_FTC_INDI_K2>) _param_ca_ftc_indi_k2,
+		(ParamFloat<px4::params::CA_FTC_INDI_K3>) _param_ca_ftc_indi_k3,
+		(ParamFloat<px4::params::CA_FTC_Z_P>) _param_ca_ftc_z_p,
+		(ParamFloat<px4::params::CA_FTC_Z_D>) _param_ca_ftc_z_d,
+		(ParamFloat<px4::params::CA_FTC_Y2_P>) _param_ca_ftc_y2_p,
+		(ParamFloat<px4::params::CA_FTC_Y2_D>) _param_ca_ftc_y2_d,
+		(ParamFloat<px4::params::CA_FTC_INDI_FC>) _param_ca_ftc_indi_fc,
+		(ParamFloat<px4::params::CA_FTC_INDI_ILIM>) _param_ca_ftc_indi_ilim,
+		(ParamFloat<px4::params::CA_FTC_INDI_M>) _param_ca_ftc_indi_m,
+		(ParamFloat<px4::params::CA_FTC_INDI_IX>) _param_ca_ftc_indi_ix,
+		(ParamFloat<px4::params::CA_FTC_INDI_IY>) _param_ca_ftc_indi_iy,
+		(ParamFloat<px4::params::CA_FTC_KF>) _param_ca_ftc_kf,
+		(ParamFloat<px4::params::CA_FTC_OMAX>) _param_ca_ftc_omax,
+		(ParamFloat<px4::params::CA_FTC_ERPMAX>) _param_ca_ftc_erpmax,
+		(ParamFloat<px4::params::CA_FTC_INDI_SDL>) _param_ca_ftc_indi_sdl,
+		(ParamFloat<px4::params::CA_FTC_INDI_DUL>) _param_ca_ftc_indi_dul,
+		(ParamFloat<px4::params::MPC_THR_HOVER>) _param_mpc_thr_hover,
 		(ParamInt<px4::params::CA_RW_MOT_IDX>) _param_ca_rw_mot_idx
 	)
 

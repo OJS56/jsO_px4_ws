@@ -72,6 +72,12 @@ void PositionControl::setHorizontalThrustMargin(const float margin)
 	_lim_thr_xy_margin = margin;
 }
 
+void PositionControl::setFtcPrimaryAxisThrustCompensation(bool enabled, float primary_axis_nz)
+{
+	_ftc_primary_axis_thrust_comp_enabled = enabled && PX4_ISFINITE(primary_axis_nz) && primary_axis_nz < -FLT_EPSILON;
+	_ftc_primary_axis_nz = _ftc_primary_axis_thrust_comp_enabled ? primary_axis_nz : -1.f;
+}
+
 void PositionControl::updateHoverThrust(const float hover_thrust_new)
 {
 	// Given that the equation for thrust is T = a_sp * Th / g - Th
@@ -185,9 +191,12 @@ void PositionControl::_velocityControl(const float dt)
 		_thr_sp.xy() = thrust_sp_xy / thrust_sp_xy_norm * thrust_max_xy;
 	}
 
+	const float hover_thrust = math::max(_hover_thrust, HOVER_THRUST_MIN);
+	_ftc_fz_des_body = _thr_sp(2) * CONSTANTS_ONE_G / hover_thrust / _ftc_thrust_effectiveness;
+
 	// Use tracking Anti-Windup for horizontal direction: during saturation, the integrator is used to unsaturate the output
 	// see Anti-Reset Windup for PID controllers, L.Rundqwist, 1990
-	const Vector2f acc_sp_xy_produced = Vector2f(_thr_sp) * (CONSTANTS_ONE_G / _hover_thrust);
+	const Vector2f acc_sp_xy_produced = Vector2f(_thr_sp) * (_ftc_thrust_effectiveness * CONSTANTS_ONE_G / _hover_thrust);
 
 	// The produced acceleration can be greater or smaller than the desired acceleration due to the saturations and the actual vertical thrust (computed independently).
 	// The ARW loop needs to run if the signal is saturated only.
@@ -216,11 +225,22 @@ void PositionControl::_accelerationControl()
 
 	Vector3f body_z = Vector3f(-_acc_sp(0), -_acc_sp(1), -z_specific_force).normalized();
 	ControlMath::limitTilt(body_z, Vector3f(0, 0, 1), _lim_tilt);
+	// Keep the raw acceleration-demand magnitude only as a diagnostic. The FTC allocator's
+	// body-z force command is derived from the final saturated thrust setpoint below.
+	_ftc_specific_force_magnitude = Vector3f(-_acc_sp(0), -_acc_sp(1), z_specific_force).norm();
 	// Convert to thrust assuming hover thrust produces standard gravity
 	const float thrust_ned_z = _acc_sp(2) * (_hover_thrust / CONSTANTS_ONE_G) - _hover_thrust;
 	// Project thrust to planned body attitude
 	const float cos_ned_body = (Vector3f(0, 0, 1).dot(body_z));
-	const float collective_thrust = math::min(thrust_ned_z / cos_ned_body, -_lim_thr_min);
+	float collective_thrust = math::min(thrust_ned_z / cos_ned_body, -_lim_thr_min);
+
+	_ftc_thrust_effectiveness = 1.f;
+
+	if (_ftc_primary_axis_thrust_comp_enabled) {
+		_ftc_thrust_effectiveness = math::constrain(-_ftc_primary_axis_nz, 0.2f, 1.f);
+		collective_thrust /= _ftc_thrust_effectiveness;
+	}
+
 	_thr_sp = body_z * collective_thrust;
 }
 
@@ -270,4 +290,14 @@ void PositionControl::getAttitudeSetpoint(vehicle_attitude_setpoint_s &attitude_
 {
 	ControlMath::thrustToAttitude(_thr_sp, _yaw_sp, attitude_setpoint);
 	attitude_setpoint.yaw_sp_move_rate = _yawspeed_sp;
+}
+
+void PositionControl::getFtcPhysicalSetpoint(vehicle_ftc_physical_setpoint_s &ftc_physical_setpoint) const
+{
+	ftc_physical_setpoint.fz_des_body = _ftc_fz_des_body;
+	ftc_physical_setpoint.specific_force_magnitude = _ftc_specific_force_magnitude;
+	ftc_physical_setpoint.primary_axis_nz = _ftc_primary_axis_nz;
+	ftc_physical_setpoint.thrust_effectiveness = _ftc_thrust_effectiveness;
+	_acc_sp.copyTo(ftc_physical_setpoint.acceleration_sp);
+	_thr_sp.copyTo(ftc_physical_setpoint.thrust_sp);
 }

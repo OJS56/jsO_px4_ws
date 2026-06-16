@@ -1,0 +1,121 @@
+#!/bin/sh
+#
+# @name Gazebo-classic Bebop2 FTC
+#
+# @type Quadrotor Wide
+#
+# @maintainer FTC INDI experiment
+#
+
+. ${R}etc/init.d/rc.mc_defaults
+
+# Multirotor control-allocation geometry. The motor order follows the paper
+# notation for the left-back rotor failure case:
+#   motor0 = omega1, motor1 = omega2, motor2 = omega3, motor3 = omega4.
+# With upward rotor axes, this reproduces the Eq. (8) signs for the healthy
+# inputs [omega1^2, omega2^2, omega3^2] after omega4 is lost.
+param set CA_AIRFRAME 0
+param set CA_METHOD 1
+param set CA_ROTOR_COUNT 4
+
+param set CA_ROTOR0_PX 0.088
+param set CA_ROTOR0_PY -0.115
+param set CA_ROTOR0_PZ 0.0
+param set CA_ROTOR0_AX 0.0
+param set CA_ROTOR0_AY 0.0
+param set CA_ROTOR0_AZ -1.0
+param set CA_ROTOR0_CT 1.0
+param set CA_ROTOR0_KM 0.06
+
+param set CA_ROTOR1_PX 0.088
+param set CA_ROTOR1_PY 0.115
+param set CA_ROTOR1_PZ 0.0
+param set CA_ROTOR1_AX 0.0
+param set CA_ROTOR1_AY 0.0
+param set CA_ROTOR1_AZ -1.0
+param set CA_ROTOR1_CT 1.0
+param set CA_ROTOR1_KM -0.06
+
+param set CA_ROTOR2_PX -0.088
+param set CA_ROTOR2_PY 0.115
+param set CA_ROTOR2_PZ 0.0
+param set CA_ROTOR2_AX 0.0
+param set CA_ROTOR2_AY 0.0
+param set CA_ROTOR2_AZ -1.0
+param set CA_ROTOR2_CT 1.0
+param set CA_ROTOR2_KM 0.06
+
+param set CA_ROTOR3_PX -0.088
+param set CA_ROTOR3_PY -0.115
+param set CA_ROTOR3_PZ 0.0
+param set CA_ROTOR3_AX 0.0
+param set CA_ROTOR3_AY 0.0
+param set CA_ROTOR3_AZ -1.0
+param set CA_ROTOR3_CT 1.0
+param set CA_ROTOR3_KM -0.06
+
+param set PWM_MAIN_FUNC1 101
+param set PWM_MAIN_FUNC2 102
+param set PWM_MAIN_FUNC3 103
+param set PWM_MAIN_FUNC4 104
+
+# Paper-form single-rotor FTC INDI defaults. CA_FTC_STATE remains normal at
+# boot so the paper failure can be triggered in SITL with:
+#   param set CA_FTC_STATE 1
+param set CA_FTC_EN 1
+param set CA_FTC_TYPE 1
+param set CA_FTC_MOT 4
+param set CA_FTC_LOE 0.0
+param set CA_FTC_TRIG_MODE 1
+param set CA_FTC_STATE 0
+param set CA_FTC_ALC_MODE 1
+param set CA_FTC_DUAL_EN 0
+param set CA_FTC_INDI_EN 1
+
+# Physical parameters used by the allocator's omega^2-domain INDI path.
+param set CA_FTC_KF 0.00000178699
+param set CA_FTC_OMAX 1500.0
+param set CA_FTC_ERPMAX 14324.0
+param set CA_FTC_INDI_M 0.410
+param set CA_FTC_INDI_IX 0.00167
+param set CA_FTC_INDI_IY 0.00138
+param set CA_FTC_INDI_SDL 0.0
+param set CA_FTC_INDI_DUL 0.0
+param set CA_FTC_INDI_K1 8.0
+param set CA_FTC_INDI_K2 8.0
+param set CA_FTC_INDI_K3 8.0
+param set CA_FTC_INDI_FC 15.0
+
+param set MC_FTC_INDI_EN 1
+param set MC_FTC_NX 0.10
+param set MC_FTC_NY 0.10
+param set MC_FTC_NZ -1.00
+param set MC_FTC_KX 3.0
+param set MC_FTC_KY 3.0
+param set MC_ROLLRATE_MAX 360.0
+param set MC_PITCHRATE_MAX 360.0
+
+# The model motor constant was selected so no-fault hover is near cmd=0.5.
+param set MPC_THR_HOVER 0.50
+
+# Match the paper IMU/control-rate assumption as closely as the SITL pipeline
+# allows. Logged vehicle_acceleration can still be downsampled by logger config.
+param set IMU_INTEG_RATE 512
+param set IMU_GYRO_RATEMAX 512
+
+# Lightweight Bebop2 model tuning. The default Iris-class gains make this
+# low-inertia model oscillate, most visibly on yaw and pitch in no-fault hover.
+param set MC_ROLL_P 3.0
+param set MC_PITCH_P 3.0
+param set MC_YAW_P 1.2
+
+param set MC_ROLLRATE_P 0.035
+param set MC_ROLLRATE_I 0.015
+param set MC_ROLLRATE_D 0.0003
+param set MC_PITCHRATE_P 0.030
+param set MC_PITCHRATE_I 0.015
+param set MC_PITCHRATE_D 0.0003
+param set MC_YAWRATE_P 0.040
+param set MC_YAWRATE_I 0.010
+param set MC_YAWRATE_D 0.0
+param set MC_YAWRATE_MAX 120.0

@@ -204,6 +204,97 @@ MulticopterAttitudeControl::generate_attitude_setpoint(const Quatf &q, float dt)
 	_vehicle_attitude_setpoint_pub.publish(attitude_setpoint);
 }
 
+Vector3f
+MulticopterAttitudeControl::updateFtcPrimaryAxisRateSetpoint(const Quatf &q,
+		const vehicle_attitude_setpoint_s &attitude_setpoint, float dt)
+{
+	Vector3f primary_axis_body{_param_mc_ftc_nx.get(), _param_mc_ftc_ny.get(), _param_mc_ftc_nz.get()};
+
+	if (primary_axis_body.norm_squared() < FLT_EPSILON) {
+		primary_axis_body = Vector3f{0.f, 0.f, -1.f};
+	}
+
+	primary_axis_body.normalize();
+
+	const Quatf q_des{attitude_setpoint.q_d};
+	Vector3f n_des_inertial = -q_des.dcm_z();
+
+	if (n_des_inertial.norm_squared() < FLT_EPSILON) {
+		n_des_inertial = -q.dcm_z();
+	}
+
+	n_des_inertial.normalize();
+
+	if (!_ftc_primary_axis_initialized) {
+		_ftc_ndes_inertial_prev = n_des_inertial;
+		_ftc_ndes_inertial_prev_timestamp = attitude_setpoint.timestamp;
+		_ftc_primary_axis_initialized = true;
+	}
+
+	Vector3f n_des_dot_inertial{};
+	const bool n_des_setpoint_updated = attitude_setpoint.timestamp == 0
+					    || attitude_setpoint.timestamp > _ftc_ndes_inertial_prev_timestamp;
+
+	if (n_des_setpoint_updated) {
+		const float n_des_dt = attitude_setpoint.timestamp != 0 && _ftc_ndes_inertial_prev_timestamp != 0
+				       ? math::constrain((attitude_setpoint.timestamp - _ftc_ndes_inertial_prev_timestamp) * 1e-6f,
+							 0.0002f, 0.2f)
+				       : math::max(dt, 0.0002f);
+
+		n_des_dot_inertial = (n_des_inertial - _ftc_ndes_inertial_prev) / n_des_dt;
+		_ftc_ndes_inertial_prev = n_des_inertial;
+		_ftc_ndes_inertial_prev_timestamp = attitude_setpoint.timestamp;
+	}
+
+	const Dcmf R{q};
+	const Vector3f h = R.transpose() * n_des_inertial;
+	const Vector3f n_des_dot_body = R.transpose() * n_des_dot_inertial;
+	const float h1 = h(0);
+	const float h2 = h(1);
+	const float h3 = math::constrain(h(2), -1.f, -0.05f);
+	const float yaw_rate = _angular_rates(2);
+
+	Vector3f rates_sp{};
+
+	if (_ftc_dual_axis_active) {
+		const float c = cosf(_ftc_chi);
+		const float s = sinf(_ftc_chi);
+		const float y2 = h1 * c + h2 * s;
+		const float y2_dot_ff = c * n_des_dot_body(0) + s * n_des_dot_body(1);
+		const float yaw_term = c * h2 * yaw_rate - s * h1 * yaw_rate;
+		const float nu = -_param_mc_ftc_kx.get() * y2 + y2_dot_ff - yaw_term;
+
+		rates_sp(0) = s * nu / h3;
+		rates_sp(1) = -c * nu / h3;
+
+	} else {
+		const Vector2f nu_out{
+			_param_mc_ftc_kx.get() * (primary_axis_body(0) - h1),
+			_param_mc_ftc_ky.get() * (primary_axis_body(1) - h2)
+		};
+
+		rates_sp(0) = (nu_out(1) + h1 * yaw_rate - n_des_dot_body(1)) / h3;
+		rates_sp(1) = -(nu_out(0) - h2 * yaw_rate - n_des_dot_body(0)) / h3;
+	 	// rates_sp(0) = (nu_out(1) + h1 * yaw_rate) / h3;
+	 	// rates_sp(1) = -(nu_out(0) - h2 * yaw_rate) / h3;
+	}
+
+	rates_sp(2) = NAN;
+
+	// const float collective_thrust = math::max(-attitude_setpoint.thrust_body[2], 0.f);
+	// const float ftc_thrust_gate = math::constrain((collective_thrust - 0.10f) / 0.35f, 0.f, 1.f);
+	// rates_sp(0) *= ftc_thrust_gate;
+	// rates_sp(1) *= ftc_thrust_gate;
+
+	const float roll_rate_limit = math::radians(_param_mc_rollrate_max.get());
+	const float pitch_rate_limit = math::radians(_param_mc_pitchrate_max.get());
+
+	rates_sp(0) = math::constrain(rates_sp(0), -roll_rate_limit, roll_rate_limit);
+	rates_sp(1) = math::constrain(rates_sp(1), -pitch_rate_limit, pitch_rate_limit);
+
+	return rates_sp;
+}
+
 void
 MulticopterAttitudeControl::Run()
 {
@@ -254,6 +345,20 @@ MulticopterAttitudeControl::Run()
 		/* check for updates in other topics */
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 		_vehicle_control_mode_sub.update(&_vehicle_control_mode);
+
+		vehicle_angular_velocity_s angular_velocity;
+
+		if (_vehicle_angular_velocity_sub.update(&angular_velocity)) {
+			_angular_rates = Vector3f{angular_velocity.xyz};
+		}
+
+		control_allocator_ftc_debug_s ftc_debug;
+
+		if (_control_allocator_ftc_debug_sub.update(&ftc_debug)) {
+			_ftc_primary_axis_active = _param_mc_ftc_indi_en.get() && ftc_debug.indi_control_active;
+			_ftc_dual_axis_active = _ftc_primary_axis_active && ftc_debug.ftc_mode == 2;
+			_ftc_chi = ftc_debug.chi;
+		}
 
 		if (_vehicle_status_sub.updated()) {
 			vehicle_status_s vehicle_status;
@@ -310,14 +415,13 @@ MulticopterAttitudeControl::Run()
 
 			// Check for new attitude setpoint
 			if (_vehicle_attitude_setpoint_sub.updated()) {
-				vehicle_attitude_setpoint_s vehicle_attitude_setpoint;
+				if (_vehicle_attitude_setpoint_sub.copy(&_vehicle_attitude_setpoint)
+				    && (_vehicle_attitude_setpoint.timestamp > _last_attitude_setpoint)) {
 
-				if (_vehicle_attitude_setpoint_sub.copy(&vehicle_attitude_setpoint)
-				    && (vehicle_attitude_setpoint.timestamp > _last_attitude_setpoint)) {
-
-					_attitude_control.setAttitudeSetpoint(Quatf(vehicle_attitude_setpoint.q_d), vehicle_attitude_setpoint.yaw_sp_move_rate);
-					_thrust_setpoint_body = Vector3f(vehicle_attitude_setpoint.thrust_body);
-					_last_attitude_setpoint = vehicle_attitude_setpoint.timestamp;
+					_attitude_control.setAttitudeSetpoint(Quatf(_vehicle_attitude_setpoint.q_d),
+									      _vehicle_attitude_setpoint.yaw_sp_move_rate);
+					_thrust_setpoint_body = Vector3f(_vehicle_attitude_setpoint.thrust_body);
+					_last_attitude_setpoint = _vehicle_attitude_setpoint.timestamp;
 				}
 			}
 
@@ -341,7 +445,15 @@ MulticopterAttitudeControl::Run()
 				_quat_reset_counter = v_att.quat_reset_counter;
 			}
 
-			Vector3f rates_sp = _attitude_control.update(q);
+			Vector3f rates_sp = (_ftc_primary_axis_active && _last_attitude_setpoint != 0)
+					    ? updateFtcPrimaryAxisRateSetpoint(q, _vehicle_attitude_setpoint, dt)
+					    : _attitude_control.update(q);
+
+			if (!_ftc_primary_axis_active || _last_attitude_setpoint == 0) {
+				_ftc_primary_axis_initialized = false;
+				_ftc_ndes_inertial_prev_timestamp = 0;
+				_ftc_dual_axis_active = false;
+			}
 
 			const hrt_abstime now = hrt_absolute_time();
 			autotune_attitude_control_status_s pid_autotune;

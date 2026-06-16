@@ -97,6 +97,77 @@ PARAM_DEFINE_FLOAT(MC_YAW_P, 2.8f);
 PARAM_DEFINE_FLOAT(MC_YAW_WEIGHT, 0.4f);
 
 /**
+ * Enable primary-axis FTC attitude loop
+ *
+ * Uses the primary-axis NDI attitude loop for a single-rotor INDI FTC state.
+ * The loop aligns the configured damaged-vehicle primary axis with the desired
+ * thrust direction and leaves yaw rate uncontrolled.
+ *
+ * @group Multicopter Attitude Control
+ */
+PARAM_DEFINE_INT32(MC_FTC_INDI_EN, 1);
+
+/**
+ * FTC primary axis X component in body frame
+ *
+ * @decimal 3
+ * @increment 0.01
+ * @min -1.0
+ * @max 1.0
+ * @group Multicopter Attitude Control
+ */
+PARAM_DEFINE_FLOAT(MC_FTC_NX, 0.20f);
+
+/**
+ * FTC primary axis Y component in body frame
+ *
+ * @decimal 3
+ * @increment 0.01
+ * @min -1.0
+ * @max 1.0
+ * @group Multicopter Attitude Control
+ */
+PARAM_DEFINE_FLOAT(MC_FTC_NY, 0.20f);
+
+/**
+ * FTC primary axis Z component in body frame
+ *
+ * For a conventional PX4 FRD quadrotor this should be negative because the
+ * primary axis points along the average thrust direction, opposite body z.
+ *
+ * @decimal 3
+ * @increment 0.01
+ * @min -1.0
+ * @max 0.0
+ * @group Multicopter Attitude Control
+ */
+PARAM_DEFINE_FLOAT(MC_FTC_NZ, -0.96f);
+
+/**
+ * FTC primary-axis X tracking gain
+ *
+ * @unit 1/s
+ * @decimal 2
+ * @increment 0.1
+ * @min 0.0
+ * @max 50.0
+ * @group Multicopter Attitude Control
+ */
+PARAM_DEFINE_FLOAT(MC_FTC_KX, 3.0f);
+
+/**
+ * FTC primary-axis Y tracking gain
+ *
+ * @unit 1/s
+ * @decimal 2
+ * @increment 0.1
+ * @min 0.0
+ * @max 50.0
+ * @group Multicopter Attitude Control
+ */
+PARAM_DEFINE_FLOAT(MC_FTC_KY, 3.0f);
+
+/**
  * Max roll rate
  *
  * Limit for roll rate in manual and auto modes (except acro).
