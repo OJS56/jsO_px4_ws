@@ -69,8 +69,8 @@ param set-default MC_FTC_NY 0.20
 param set-default MC_FTC_NZ -0.96
 param set-default MC_FTC_KX 3.0
 param set-default MC_FTC_KY 3.0
-param set-default MC_ROLLRATE_MAX 360.0
-param set-default MC_PITCHRATE_MAX 360.0
+param set-default MC_ROLLRATE_MAX 1800.0
+param set-default MC_PITCHRATE_MAX 1800.0
 param set-default MPC_THR_HOVER 0.44
 
 # Force persisted SITL params to stay aligned with the iris_ftc GZ motor model.
@@ -78,11 +78,11 @@ param set SIM_GZ_EC_MIN1 0
 param set SIM_GZ_EC_MIN2 0
 param set SIM_GZ_EC_MIN3 0
 param set SIM_GZ_EC_MIN4 0
-param set SIM_GZ_EC_MAX1 2000
-param set SIM_GZ_EC_MAX2 2000
-param set SIM_GZ_EC_MAX3 2000
-param set SIM_GZ_EC_MAX4 2000
-param set CA_FTC_OMAX 2000.0
+param set SIM_GZ_EC_MAX1 1250
+param set SIM_GZ_EC_MAX2 1250
+param set SIM_GZ_EC_MAX3 1250
+param set SIM_GZ_EC_MAX4 1250
+param set CA_FTC_OMAX 1250.0
 param set CA_FTC_INDI_M 1.5
 param set CA_FTC_INDI_IX 0.029125
 param set CA_FTC_INDI_IY 0.029125

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
 import argparse
+import csv
 import html
 import json
 import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from pyulog import ULog
@@ -14,6 +16,8 @@ from pyulog import ULog
 
 DEFAULT_LOG_ROOT = Path("build/px4_sitl_default/rootfs/log")
 DEFAULT_OUTPUT = Path("/tmp/ftc_indi_log_report.html")
+DEFAULT_WIND_WORLD = Path("Tools/simulation/gz/worlds/iris_ftc_default.sdf")
+DEFAULT_AERO_DEBUG = Path("/tmp/iris_ftc_aero_debug.csv")
 
 
 TOPICS = (
@@ -91,6 +95,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-points", type=int, default=1800, help="Maximum points per trace after downsampling.")
     parser.add_argument("--event-padding", type=float, default=8.0, help="Seconds before/after FTC active interval to plot.")
     parser.add_argument("--full", action="store_true", help="Plot the full log instead of FTC event +/- padding.")
+    parser.add_argument(
+        "--wind-events",
+        default="",
+        help="Manual wind schedule: 'time:x:y:z[:enabled],...'. Example: '0:5:0:0,30:0:8:0,60:0:12:0'.",
+    )
+    parser.add_argument(
+        "--wind-events-file",
+        default="",
+        help="CSV/JSON wind schedule. CSV columns: time_s,x,y,z[,enabled]. JSON: list of event objects.",
+    )
+    parser.add_argument(
+        "--wind-world",
+        default=str(DEFAULT_WIND_WORLD),
+        help="World SDF used to infer the initial wind when no explicit t=0 wind event is present.",
+    )
+    parser.add_argument(
+        "--aero-debug-file",
+        default=str(DEFAULT_AERO_DEBUG),
+        help="CSV emitted by IrisFtcAerodynamicsSystemPlugin.",
+    )
     return parser.parse_args()
 
 
@@ -185,6 +209,368 @@ def panel(title: str, ylabel: str, traces: list[dict[str, Any] | None]) -> dict[
     if not clean:
         return None
     return {"title": title, "ylabel": ylabel, "traces": clean}
+
+
+def bool_from_value(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    text = str(value).strip().lower()
+
+    if text in ("1", "true", "yes", "on", "enable", "enabled"):
+        return True
+
+    if text in ("0", "false", "no", "off", "disable", "disabled"):
+        return False
+
+    return default
+
+
+def parse_wind_event_row(row: dict[str, Any]) -> dict[str, Any]:
+    def first_float(names: tuple[str, ...], default: float | None = None) -> float:
+        for name in names:
+            if name in row and row[name] not in ("", None):
+                return float(row[name])
+
+        if default is not None:
+            return default
+
+        raise KeyError(names[0])
+
+    enabled = bool_from_value(row.get("enabled", row.get("enable_wind", True)), True)
+
+    return {
+        "time_s": first_float(("time_s", "time", "t")),
+        "x": first_float(("x", "wind_x", "vx")),
+        "y": first_float(("y", "wind_y", "vy")),
+        "z": first_float(("z", "wind_z", "vz"), 0.0),
+        "enabled": enabled,
+    }
+
+
+def parse_wind_events(spec: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+
+    for item in spec.replace(";", ",").split(","):
+        item = item.strip()
+
+        if not item:
+            continue
+
+        parts = [part.strip() for part in item.replace("/", ":").split(":")]
+
+        if len(parts) not in (4, 5):
+            raise ValueError(f"Invalid wind event '{item}', expected time:x:y:z[:enabled]")
+
+        events.append({
+            "time_s": float(parts[0]),
+            "x": float(parts[1]),
+            "y": float(parts[2]),
+            "z": float(parts[3]),
+            "enabled": bool_from_value(parts[4], True) if len(parts) == 5 else True,
+        })
+
+    return events
+
+
+def load_wind_events_file(path: Path) -> list[dict[str, Any]]:
+    if path.suffix.lower() == ".json":
+        raw = json.loads(path.read_text())
+
+        if not isinstance(raw, list):
+            raise ValueError(f"{path} must contain a JSON list of wind event objects")
+
+        return [parse_wind_event_row(dict(row)) for row in raw]
+
+    rows: list[dict[str, Any]] = []
+
+    with path.open(newline="") as file:
+        sample = file.read(4096)
+        file.seek(0)
+
+        try:
+            has_header = csv.Sniffer().has_header(sample) if sample.strip() else True
+        except csv.Error:
+            has_header = True
+
+        if has_header:
+            for row in csv.DictReader(line for line in file if not line.lstrip().startswith("#")):
+                rows.append(parse_wind_event_row(row))
+
+        else:
+            reader = csv.reader(line for line in file if not line.lstrip().startswith("#"))
+
+            for values in reader:
+                if len(values) < 4:
+                    continue
+
+                rows.append(parse_wind_event_row({
+                    "time_s": values[0],
+                    "x": values[1],
+                    "y": values[2],
+                    "z": values[3],
+                    "enabled": values[4] if len(values) > 4 else True,
+                }))
+
+    return rows
+
+
+def wind_sidecar_candidates(log_path: Path) -> list[Path]:
+    return [
+        log_path.with_suffix(".wind.csv"),
+        log_path.with_suffix(".wind.json"),
+        log_path.with_name(f"{log_path.stem}_wind.csv"),
+        log_path.with_name(f"{log_path.stem}_wind.json"),
+        Path("/tmp/iris_ftc_wind_events.csv"),
+        Path("wind_events.csv"),
+        Path("wind_events.json"),
+    ]
+
+
+def parse_initial_wind_from_sdf(path: Path) -> tuple[float, float, float] | None:
+    if not path.exists():
+        return None
+
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return None
+
+    linear_velocity = root.find(".//wind/linear_velocity")
+
+    if linear_velocity is None or not linear_velocity.text:
+        return None
+
+    try:
+        values = [float(value) for value in linear_velocity.text.split()]
+    except ValueError:
+        return None
+
+    if len(values) != 3:
+        return None
+
+    return values[0], values[1], values[2]
+
+
+def load_wind_schedule(args: argparse.Namespace, log_path: Path) -> tuple[list[dict[str, Any]], str]:
+    events: list[dict[str, Any]] = []
+    source = ""
+
+    if args.wind_events:
+        events = parse_wind_events(args.wind_events)
+        source = "--wind-events"
+
+    elif args.wind_events_file:
+        events = load_wind_events_file(Path(args.wind_events_file).expanduser().resolve())
+        source = args.wind_events_file
+
+    else:
+        for candidate in wind_sidecar_candidates(log_path):
+            candidate = candidate.expanduser()
+
+            if candidate.exists():
+                events = load_wind_events_file(candidate.resolve())
+                source = str(candidate)
+                break
+
+    world_path = Path(args.wind_world).expanduser()
+    initial_wind = parse_initial_wind_from_sdf(world_path)
+
+    has_initial = any(abs(float(event["time_s"])) < 1e-6 for event in events)
+
+    if initial_wind is not None and not has_initial:
+        events.insert(0, {
+            "time_s": 0.0,
+            "x": initial_wind[0],
+            "y": initial_wind[1],
+            "z": initial_wind[2],
+            "enabled": True,
+        })
+
+        if not source:
+            source = f"initial wind from {world_path}"
+
+    events.sort(key=lambda event: float(event["time_s"]))
+    return events, source
+
+
+def trace_from_wind_events(
+    events: list[dict[str, Any]],
+    component: str,
+    label: str,
+    start: float | None,
+    end: float | None,
+    max_points: int,
+) -> dict[str, Any] | None:
+    if not events:
+        return None
+
+    x = np.asarray([float(event["time_s"]) for event in events], dtype=np.float64)
+
+    if component == "speed":
+        y = np.asarray([
+            math.sqrt(float(event["x"]) ** 2 + float(event["y"]) ** 2 + float(event["z"]) ** 2)
+            if bool_from_value(event.get("enabled"), True) else 0.0
+            for event in events
+        ], dtype=np.float64)
+
+    elif component == "enabled":
+        y = np.asarray([1.0 if bool_from_value(event.get("enabled"), True) else 0.0 for event in events], dtype=np.float64)
+
+    else:
+        y = np.asarray([
+            float(event[component]) if bool_from_value(event.get("enabled"), True) else 0.0
+            for event in events
+        ], dtype=np.float64)
+
+    if start is not None:
+        previous = np.flatnonzero(x <= start)
+
+        if len(previous) > 0 and (len(x) == 0 or x[previous[-1]] < start):
+            held_value = y[previous[-1]]
+            x = np.insert(x, 0, start)
+            y = np.insert(y, 0, held_value)
+
+    if end is not None:
+        previous = np.flatnonzero(x <= end)
+
+        if len(previous) > 0 and x[previous[-1]] < end:
+            x = np.append(x, end)
+            y = np.append(y, y[previous[-1]])
+
+    x, y = clip_window(x, y, start, end)
+    xp, yp = downsample(x, y, max_points)
+
+    if not xp:
+        return None
+
+    return {"x": xp, "y": yp, "label": label, "shape": "hv"}
+
+
+def build_wind_panel(
+    events: list[dict[str, Any]],
+    start: float | None,
+    end: float | None,
+    max_points: int,
+) -> dict[str, Any] | None:
+    return panel("GZ Wind Command Schedule", "m/s / enabled", [
+        trace_from_wind_events(events, "speed", "wind speed", start, end, max_points),
+        trace_from_wind_events(events, "x", "wind x", start, end, max_points),
+        trace_from_wind_events(events, "y", "wind y", start, end, max_points),
+        trace_from_wind_events(events, "z", "wind z", start, end, max_points),
+        trace_from_wind_events(events, "enabled", "wind enabled", start, end, max_points),
+    ])
+
+
+def load_aero_debug_csv(path: Path) -> dict[str, np.ndarray] | None:
+    if not path.exists():
+        return None
+
+    rows: list[dict[str, str]] = []
+
+    with path.open(newline="") as file:
+        for row in csv.DictReader(line for line in file if not line.lstrip().startswith("#")):
+            rows.append(row)
+
+    if not rows:
+        return None
+
+    data: dict[str, np.ndarray] = {}
+
+    for column in rows[0].keys():
+        values: list[float] = []
+
+        for row in rows:
+            try:
+                values.append(float(row[column]))
+            except (TypeError, ValueError):
+                values.append(float("nan"))
+
+        data[column] = np.asarray(values, dtype=np.float64)
+
+    return data
+
+
+def aero_trace(
+    aero: dict[str, np.ndarray] | None,
+    field_name: str,
+    label: str,
+    start: float | None,
+    end: float | None,
+    max_points: int,
+) -> dict[str, Any] | None:
+    if aero is None or "time_s" not in aero or field_name not in aero:
+        return None
+
+    return trace_from_arrays(aero["time_s"], aero[field_name], label, start, end, max_points)
+
+
+def build_aero_panel(
+    aero: dict[str, np.ndarray] | None,
+    start: float | None,
+    end: float | None,
+    max_points: int,
+) -> dict[str, Any] | None:
+    traces = [
+        aero_trace(aero, "airspeed", "V airspeed", start, end, max_points),
+        aero_trace(aero, "fx_s", "fx_s = Cx V", start, end, max_points),
+        aero_trace(aero, "fy_s", "fy_s = sign(r)(Cy1 V + Cy2 V^2)", start, end, max_points),
+        aero_trace(aero, "force_x", "force world x", start, end, max_points),
+        aero_trace(aero, "force_y", "force world y", start, end, max_points),
+        aero_trace(aero, "force_z", "force world z", start, end, max_points),
+        aero_trace(aero, "r_about_spin_axis", "r about spin axis", start, end, max_points),
+    ]
+    result = panel("GZ Paper Aero Force - Stabilization Frame", "m/s, m/s^2, N", traces)
+
+    if result is not None or aero is None or start is None or end is None:
+        return result
+
+    # GZ sidecar CSVs use simulation time, while ULog panels use log-relative
+    # time. If the selected FTC window misses the sidecar by a small offset, keep
+    # the diagnostic visible instead of silently dropping the whole panel.
+    return panel("GZ Paper Aero Force - Stabilization Frame", "m/s, m/s^2, N", [
+        aero_trace(aero, "airspeed", "V airspeed", None, None, max_points),
+        aero_trace(aero, "fx_s", "fx_s = Cx V", None, None, max_points),
+        aero_trace(aero, "fy_s", "fy_s = sign(r)(Cy1 V + Cy2 V^2)", None, None, max_points),
+        aero_trace(aero, "force_x", "force world x", None, None, max_points),
+        aero_trace(aero, "force_y", "force world y", None, None, max_points),
+        aero_trace(aero, "force_z", "force world z", None, None, max_points),
+        aero_trace(aero, "r_about_spin_axis", "r about spin axis", None, None, max_points),
+    ])
+
+
+def build_aero_moment_panel(
+    aero: dict[str, np.ndarray] | None,
+    start: float | None,
+    end: float | None,
+    max_points: int,
+) -> dict[str, Any] | None:
+    traces = [
+        aero_trace(aero, "psi_s", "heading psi_s", start, end, max_points),
+        aero_trace(aero, "moment_b_x", "Ma body x", start, end, max_points),
+        aero_trace(aero, "moment_b_y", "Ma body y", start, end, max_points),
+        aero_trace(aero, "moment_b_z", "Ma body z", start, end, max_points),
+        aero_trace(aero, "moment_w_x", "Ma world x", start, end, max_points),
+        aero_trace(aero, "moment_w_y", "Ma world y", start, end, max_points),
+        aero_trace(aero, "moment_w_z", "Ma world z", start, end, max_points),
+    ]
+    result = panel("GZ Aero Moment Surrogate - Disabled Unless Configured", "rad / Nm", traces)
+
+    if result is not None or aero is None or start is None or end is None:
+        return result
+
+    return panel("GZ Aero Moment Surrogate - Disabled Unless Configured", "rad / Nm", [
+        aero_trace(aero, "psi_s", "heading psi_s", None, None, max_points),
+        aero_trace(aero, "moment_b_x", "Ma body x", None, None, max_points),
+        aero_trace(aero, "moment_b_y", "Ma body y", None, None, max_points),
+        aero_trace(aero, "moment_b_z", "Ma body z", None, None, max_points),
+        aero_trace(aero, "moment_w_x", "Ma world x", None, None, max_points),
+        aero_trace(aero, "moment_w_y", "Ma world y", None, None, max_points),
+        aero_trace(aero, "moment_w_z", "Ma world z", None, None, max_points),
+    ])
 
 
 def trace_from_arrays(
@@ -950,7 +1336,7 @@ payload.panels.forEach((panel, panelIndex) => {{
     x: trace.x,
     y: trace.y,
     name: trace.label,
-    line: {{ color: colors[traceIndex % colors.length], width: 1.7 }},
+    line: {{ color: colors[traceIndex % colors.length], width: 1.7, shape: trace.shape || "linear" }},
     hovertemplate: "%{{x:.4f}} s<br>%{{y:.6g}}<extra>%{{fullData.name}}</extra>",
   }}));
 
@@ -1019,10 +1405,51 @@ def main() -> None:
         plot_start = max(0.0, event_start - args.event_padding)
         plot_end = event_end + args.event_padding
 
+    wind_events, wind_source = load_wind_schedule(args, log_path)
+    wind_panel = build_wind_panel(wind_events, plot_start, plot_end, args.max_points)
+    aero_debug_path = Path(args.aero_debug_file).expanduser().resolve()
+    aero_debug = load_aero_debug_csv(aero_debug_path)
+    aero_panel = build_aero_panel(aero_debug, plot_start, plot_end, args.max_points)
+    aero_moment_panel = build_aero_moment_panel(aero_debug, plot_start, plot_end, args.max_points)
     panels = build_panels(data, params, t0_us, changed_params, plot_start, plot_end, args.max_points)
+
+    if aero_panel is not None:
+        panels.insert(0, aero_panel)
+
+    if aero_moment_panel is not None:
+        panels.insert(0, aero_moment_panel)
+
+    if wind_panel is not None:
+        panels.insert(0, wind_panel)
+
     rates = {name: dataset_rate(data.get(name)) for name in TOPICS if name in data}
     stats = active_stats(data.get("control_allocator_ftc_debug"))
     stats.update(pa_active_stats(compute_pa_ndi_analysis(data, params, changed_params, t0_us)))
+
+    if wind_events:
+        stats["wind_schedule_source"] = wind_source or "manual/unknown"
+        stats["wind_schedule_events"] = len(wind_events)
+        stats["wind_schedule_max_speed_m_s"] = max(
+            math.sqrt(float(event["x"]) ** 2 + float(event["y"]) ** 2 + float(event["z"]) ** 2)
+            if bool_from_value(event.get("enabled"), True) else 0.0
+            for event in wind_events
+        )
+
+    if aero_debug is not None:
+        stats["aero_debug_source"] = str(aero_debug_path)
+        stats["aero_debug_rows"] = int(len(aero_debug["time_s"]))
+        stats["aero_debug_time_range_s"] = [
+            float(np.nanmin(aero_debug["time_s"])),
+            float(np.nanmax(aero_debug["time_s"])),
+        ]
+        stats["aero_debug_max_airspeed_m_s"] = float(np.nanmax(aero_debug["airspeed"]))
+        stats["aero_debug_max_abs_fx_s_m_s2"] = float(np.nanmax(np.abs(aero_debug["fx_s"])))
+        stats["aero_debug_max_abs_fy_s_m_s2"] = float(np.nanmax(np.abs(aero_debug["fy_s"])))
+
+        for name in ("moment_b_x", "moment_b_y", "moment_b_z"):
+            if name in aero_debug:
+                stats[f"aero_debug_max_abs_{name}_nm"] = float(np.nanmax(np.abs(aero_debug[name])))
+
     absent_topics = missing_topics(data)
 
     if absent_topics:
@@ -1033,6 +1460,12 @@ def main() -> None:
 
     print(f"Wrote {output_path}")
     print(f"Panels: {len(panels)}")
+    if wind_events:
+        print(f"Wind schedule: {wind_source or 'manual/unknown'} ({len(wind_events)} events)")
+        if not args.wind_events and not args.wind_events_file and wind_source.startswith("initial wind"):
+            print("  Runtime gz wind_cmd is not recorded in ULog; pass --wind-events or a sidecar wind CSV/JSON to plot changes.")
+    if aero_debug is not None:
+        print(f"Aero debug: {aero_debug_path} ({len(aero_debug['time_s'])} rows)")
     if param_changes:
         print("Runtime parameter changes:")
         for row in param_changes:

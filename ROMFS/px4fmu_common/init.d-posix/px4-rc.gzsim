@@ -47,7 +47,47 @@ if [ -z "${PX4_GZ_STANDALONE}" ]; then
 
 		echo "INFO  [init] Starting gazebo with world: ${PX4_GZ_WORLDS}/${PX4_GZ_WORLD}.sdf"
 
-		${gz_command} ${gz_sub_command} --verbose=${GZ_VERBOSE:=1} -r -s "${PX4_GZ_WORLDS}/${PX4_GZ_WORLD}.sdf" &
+		gz_record_options=""
+
+		if [ -n "${GZ_RECORD_PATH}" ]; then
+			echo "INFO  [init] Recording Gazebo state log to: ${GZ_RECORD_PATH}"
+			gz_record_options="${gz_record_options} --record-path ${GZ_RECORD_PATH}"
+
+		elif [ -n "${GZ_RECORD}" ] || [ -n "${GZ_RECORD_PERIOD}" ] || [ -n "${GZ_RECORD_RESOURCES}" ] || [ -n "${GZ_RECORD_OVERWRITE}" ] || [ -n "${GZ_RECORD_COMPRESS}" ] || [ -n "${GZ_RECORD_TOPIC}" ]; then
+			echo "INFO  [init] Recording Gazebo state log to default ~/.gz/sim/log location"
+			gz_record_options="${gz_record_options} --record"
+		fi
+
+		if [ -n "${GZ_RECORD_PERIOD}" ]; then
+			echo "INFO  [init] Gazebo record period: ${GZ_RECORD_PERIOD} s"
+			gz_record_options="${gz_record_options} --record-period ${GZ_RECORD_PERIOD}"
+		fi
+
+		if [ -n "${GZ_RECORD_RESOURCES}" ]; then
+			echo "INFO  [init] Gazebo record resources enabled"
+			gz_record_options="${gz_record_options} --record-resources"
+		fi
+
+		if [ -n "${GZ_RECORD_OVERWRITE}" ]; then
+			echo "INFO  [init] Gazebo record overwrite enabled"
+			gz_record_options="${gz_record_options} --log-overwrite"
+		fi
+
+		if [ -n "${GZ_RECORD_COMPRESS}" ]; then
+			echo "INFO  [init] Gazebo record compression enabled"
+			gz_record_options="${gz_record_options} --log-compress"
+		fi
+
+		if [ -n "${GZ_RECORD_TOPIC}" ]; then
+			echo "INFO  [init] Gazebo recording extra topic: ${GZ_RECORD_TOPIC}"
+		fi
+
+		if [ -n "${GZ_RECORD_TOPIC}" ]; then
+			${gz_command} ${gz_sub_command} ${gz_record_options} --record-topic "${GZ_RECORD_TOPIC}" --verbose=${GZ_VERBOSE:=1} -r -s "${PX4_GZ_WORLDS}/${PX4_GZ_WORLD}.sdf" &
+
+		else
+			${gz_command} ${gz_sub_command} ${gz_record_options} --verbose=${GZ_VERBOSE:=1} -r -s "${PX4_GZ_WORLDS}/${PX4_GZ_WORLD}.sdf" &
+		fi
 
 		if [ -z "${HEADLESS}" ]; then
 			echo "INFO  [init] Starting gz gui"

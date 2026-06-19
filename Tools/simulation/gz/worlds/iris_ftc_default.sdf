@@ -6,6 +6,19 @@
       <real_time_factor>1.0</real_time_factor>
       <real_time_update_rate>512</real_time_update_rate>
     </physics>
+    <plugin name="gz::sim::systems::Physics" filename="gz-sim-physics-system"/>
+    <plugin name="gz::sim::systems::UserCommands" filename="gz-sim-user-commands-system"/>
+    <plugin name="gz::sim::systems::SceneBroadcaster" filename="gz-sim-scene-broadcaster-system"/>
+    <plugin name="gz::sim::systems::Contact" filename="gz-sim-contact-system"/>
+    <plugin name="gz::sim::systems::Imu" filename="gz-sim-imu-system"/>
+    <plugin name="gz::sim::systems::AirPressure" filename="gz-sim-air-pressure-system"/>
+    <plugin name="gz::sim::systems::AirSpeed" filename="gz-sim-air-speed-system"/>
+    <plugin name="gz::sim::systems::ApplyLinkWrench" filename="gz-sim-apply-link-wrench-system"/>
+    <plugin name="gz::sim::systems::NavSat" filename="gz-sim-navsat-system"/>
+    <plugin name="gz::sim::systems::Magnetometer" filename="gz-sim-magnetometer-system"/>
+    <plugin name="gz::sim::systems::Sensors" filename="gz-sim-sensors-system">
+      <render_engine>ogre2</render_engine>
+    </plugin>
 
     <gui fullscreen="false">
       <plugin filename="MinimalScene" name="3D View">
@@ -153,7 +166,7 @@
             <izz>1</izz>
           </inertia>
         </inertial>
-        <enable_wind>false</enable_wind>
+        <enable_wind>true</enable_wind>
       </link>
       <pose>0 0 0 0 0 0</pose>
       <self_collide>false</self_collide>
@@ -178,7 +191,16 @@
         <falloff>0</falloff>
       </spot>
     </light>
-
+    <wind>
+      <linear_velocity>0 0 0</linear_velocity>
+    </wind>
+    <plugin filename="libWindCommandSystemPlugin.so"
+            name="gz::sim::systems::WindCommandSystem">
+      <commandTopic>/world/iris_ftc_default/wind_cmd</commandTopic>
+      <stateTopic>/world/iris_ftc_default/wind_cmd/state</stateTopic>
+      <logFile>/tmp/iris_ftc_wind_events.csv</logFile>
+      <maxWindSpeed>30</maxWindSpeed>
+    </plugin>
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>
       <world_frame_orientation>ENU</world_frame_orientation>

@@ -351,7 +351,7 @@
       <turningDirection>ccw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>2000.0</maxRotVelocity>
+      <maxRotVelocity>1250.0</maxRotVelocity>
       <motorConstant>5.84e-06</motorConstant>
       <momentConstant>0.06</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
@@ -367,7 +367,7 @@
       <turningDirection>ccw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>2000.0</maxRotVelocity>
+      <maxRotVelocity>1250.0</maxRotVelocity>
       <motorConstant>5.84e-06</motorConstant>
       <momentConstant>0.06</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
@@ -383,7 +383,7 @@
       <turningDirection>cw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>2000.0</maxRotVelocity>
+      <maxRotVelocity>1250.0</maxRotVelocity>
       <motorConstant>5.84e-06</motorConstant>
       <momentConstant>0.06</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
@@ -399,7 +399,7 @@
       <turningDirection>cw</turningDirection>
       <timeConstantUp>0.0125</timeConstantUp>
       <timeConstantDown>0.025</timeConstantDown>
-      <maxRotVelocity>2000.0</maxRotVelocity>
+      <maxRotVelocity>1250.0</maxRotVelocity>
       <motorConstant>5.84e-06</motorConstant>
       <momentConstant>0.06</momentConstant>
       <commandSubTopic>command/motor_speed</commandSubTopic>
@@ -410,6 +410,32 @@
       <motorType>velocity</motorType>
     </plugin>
     <plugin filename="MotorFailurePlugin" name="gz::sim::systems::MotorFailureSystem">
+    </plugin>
+    <plugin filename="libIrisFtcAerodynamicsSystemPlugin.so"
+            name="gz::sim::systems::IrisFtcAerodynamicsSystem">
+      <linkName>base_link</linkName>
+      <mass>1.5</mass>
+      <cx>0.306</cx>
+      <cy1>0.129</cy1>
+      <cy2>-0.0339</cy2>
+      <velocityCutoffHz>2.0</velocityCutoffHz>
+      <axisCutoffHz>2.0</axisCutoffHz>
+      <maxSpecificForce>35.0</maxSpecificForce>
+      <minAirspeed>0.05</minAirspeed>
+      <thrustAxisBody>0 0 1</thrustAxisBody>
+      <spinAxisBody>0 0 1</spinAxisBody>
+      <lateralSignMultiplier>1.0</lateralSignMultiplier>
+      <enableForce>true</enableForce>
+      <enableMoment>true</enableMoment>
+      <momentScale>1.0</momentScale>
+      <maXBias>0.0</maXBias>
+      <maXCos>0.0075</maXCos>
+      <maXSin>0.0</maXSin>
+      <maYBias>0.009</maYBias>
+      <maYCos>0.01</maYCos>
+      <maYSin>0.0</maYSin>
+      <maxMoment>5</maxMoment>
+      <logFile>/tmp/iris_ftc_aero_debug.csv</logFile>
     </plugin>
   </model>
 </sdf>
